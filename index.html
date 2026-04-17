@@ -484,7 +484,7 @@
       </div>
       <h1>Sync<span>Play</span></h1>
     </div>
-    <p>Listen togetherrrrrrr, in sync</p>
+    <p>Listen together, in sync</p>
   </div>
 
   <!-- MAIN CARD -->
@@ -620,8 +620,13 @@ function setLoading(btnId, loading) {
 
 async function gasCall(params) {
   const url = GAS_URL + '?' + new URLSearchParams(params).toString();
+  const t0   = Date.now();
   const res  = await fetch(url);
-  return res.json();
+  const data = await res.json();
+  const rtt  = Date.now() - t0;
+  // Shift play_at_ms forward by half RTT so both devices converge on the same wall-clock moment
+  if (data.play_at_ms) data.play_at_ms += Math.round(rtt / 2);
+  return data;
 }
 
 function extractVideoId(url) {
@@ -836,6 +841,8 @@ function launchPlayer(url, playAtMs, code) {
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
       // If player is already ready, play now; otherwise pendingPlayAt handles it in onReady
       if (ytPlayerReady) {
+        const drift = (Date.now() - pendingPlayAt) / 1000;
+        if (drift > 0.1) ytPlayer.seekTo(drift, true);
         ytPlayer.playVideo();
       }
       return;
@@ -856,12 +863,14 @@ function launchPlayer(url, playAtMs, code) {
     events: {
       onReady: (event) => {
         ytPlayerReady = true;
-        const delay = Math.max(0, pendingPlayAt - Date.now());
-        if (delay === 0) {
-          // Countdown already finished, play immediately
+        const msLeft = pendingPlayAt - Date.now();
+        if (msLeft <= 0) {
+          // We're already past the sync point — seek to correct position and play
+          const seekTo = Math.abs(msLeft) / 1000;
+          event.target.seekTo(seekTo, true);
           event.target.playVideo();
         }
-        // else the overlayTimer interval will call playVideo() when time comes
+        // else the overlayTimer interval will call playVideo() at the right moment
       },
       onError: (event) => {
         // Error codes 2, 5, 100, 101, 150 = embedding not allowed or video unavailable

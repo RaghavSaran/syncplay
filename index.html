@@ -185,6 +185,7 @@
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
     -webkit-appearance: none;
+    appearance: none;
   }
   input:focus {
     border-color: var(--accent);
@@ -782,40 +783,95 @@ function startJoinCountdown(playAtMs, url, code) {
   }, 250);
 }
 
+// ── YOUTUBE IFrame API ────────────────────────────────────────
+let ytPlayer       = null;
+let ytPlayerReady  = false;
+let pendingPlayMs  = null;   // play_at timestamp waiting for player ready
+let pendingCode    = null;
+let pendingUrl     = null;
+
+// Called automatically by YouTube after the API script loads
+window.onYouTubeIframeAPIReady = function () {
+  // Player will be created in launchPlayer; this just signals the API is loaded
+};
+
+function loadYTApiIfNeeded() {
+  if (window.YT && window.YT.Player) return Promise.resolve();
+  return new Promise(resolve => {
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = function () {
+      if (prev) prev();
+      resolve();
+    };
+    document.head.appendChild(tag);
+  });
+}
+
 // ── PLAYER ────────────────────────────────────────────────────
-function launchPlayer(url, playAtMs, code) {
+async function launchPlayer(url, playAtMs, code) {
   const videoId = extractVideoId(url);
 
   // Hide main card + how section
-  document.getElementById('main-card').style.display  = 'none';
+  document.getElementById('main-card').style.display   = 'none';
   document.getElementById('how-section').style.display = 'none';
-  document.querySelector('.logo').style.marginBottom  = '24px';
+  document.querySelector('.logo').style.marginBottom   = '24px';
 
   const playerScreen = document.getElementById('player-screen');
   playerScreen.classList.add('active');
 
   const overlay    = document.getElementById('player-overlay');
   const overlayNum = document.getElementById('overlay-count');
-  const iframe     = document.getElementById('yt-iframe');
-  const fallback   = document.getElementById('fallback-banner');
-  const fallLink   = document.getElementById('fallback-link');
 
-  // Build YouTube embed URL with autoplay suppressed (we'll trigger via API when time comes)
-  // enablejsapi=1 lets us control it; autoplay=0 initially
-  const embedUrl = `https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=0&rel=0&modestbranding=1`;
-  iframe.src = embedUrl;
+  pendingPlayMs = playAtMs;
+  pendingCode   = code;
+  pendingUrl    = url;
 
-  // Handle embed errors (some videos block embedding)
-  iframe.onerror = () => showFallback(url, playAtMs);
+  // Ensure the YT API script is loaded
+  await loadYTApiIfNeeded();
+
+  // Destroy any previous player instance
+  if (ytPlayer) {
+    ytPlayer.destroy();
+    ytPlayer = null;
+    ytPlayerReady = false;
+  }
+
+  // Re-create the div (destroy() removes the element)
+  const container = document.getElementById('video-container');
+  let div = document.getElementById('yt-iframe');
+  if (!div) {
+    div = document.createElement('div');
+    div.id = 'yt-iframe';
+    container.insertBefore(div, container.firstChild);
+  }
+
+  ytPlayer = new YT.Player('yt-iframe', {
+    videoId,
+    playerVars: {
+      autoplay: 0,
+      rel: 0,
+      modestbranding: 1,
+      playsinline: 1,   // important for iOS
+    },
+    events: {
+      onReady: onPlayerReady,
+      onError: () => showFallback(pendingUrl, pendingPlayMs),
+    }
+  });
 
   // Countdown overlay on video
   const overlayTimer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
+    const secsLeft = Math.ceil((pendingPlayMs - Date.now()) / 1000);
     if (secsLeft <= 0) {
       clearInterval(overlayTimer);
       overlay.classList.add('hidden');
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
-      triggerPlay(iframe, url, playAtMs);
+      // If player is already ready, play now; otherwise onPlayerReady will handle it
+      if (ytPlayerReady) {
+        ytPlayer.playVideo();
+      }
       return;
     }
     overlayNum.textContent = secsLeft;
@@ -823,29 +879,13 @@ function launchPlayer(url, playAtMs, code) {
   }, 100);
 }
 
-// Trigger play via postMessage to YouTube iframe API
-function triggerPlay(iframe, url, playAtMs) {
-  // Calculate exact delay remaining (should be ~0 or slightly negative — play immediately)
-  const delay = Math.max(0, playAtMs - Date.now());
-
-  setTimeout(() => {
-    try {
-      iframe.contentWindow.postMessage(
-        JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
-        '*'
-      );
-    } catch (_) {}
-
-    // Detect embed block: if video doesn't load in 3s, show fallback
-    setTimeout(() => {
-      try {
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        if (!doc || doc.body.innerHTML === '') showFallback(url, playAtMs);
-      } catch (_) {
-        // cross-origin means it loaded — that's fine
-      }
-    }, 3000);
-  }, delay);
+function onPlayerReady() {
+  ytPlayerReady = true;
+  // If the countdown has already expired, play immediately
+  if (pendingPlayMs && Date.now() >= pendingPlayMs) {
+    ytPlayer.playVideo();
+  }
+  // Otherwise the overlayTimer interval will call playVideo() when time comes
 }
 
 function showFallback(url, playAtMs) {
@@ -868,8 +908,23 @@ function resetApp() {
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
 
-  // Reset iframe
-  document.getElementById('yt-iframe').src = '';
+  // Reset YT player
+  if (ytPlayer) {
+    try { ytPlayer.stopVideo(); } catch (_) {}
+    ytPlayer.destroy();
+    ytPlayer = null;
+  }
+  ytPlayerReady = false;
+  pendingPlayMs = null;
+  pendingCode   = null;
+  pendingUrl    = null;
+  // Restore the div for next use
+  const container = document.getElementById('video-container');
+  if (!document.getElementById('yt-iframe')) {
+    const div = document.createElement('div');
+    div.id = 'yt-iframe';
+    container.insertBefore(div, container.firstChild);
+  }
 
   // Reset player screen
   document.getElementById('player-screen').classList.remove('active');

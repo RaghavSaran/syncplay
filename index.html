@@ -484,7 +484,7 @@
       </div>
       <h1>Sync<span>Play</span></h1>
     </div>
-    <p>Listen together, in sync</p>
+    <p>Listen togetherrrrrrr, in sync</p>
   </div>
 
   <!-- MAIN CARD -->
@@ -568,6 +568,7 @@
 
 </div><!-- /app -->
 
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ── CONFIG ───────────────────────────────────────────────────
 const GAS_URL = "https://script.google.com/macros/s/AKfycby3eZVNP3bO3wu_ioFmimKaips7xNPVphMPsO3zsSBQHXPCeP93bioflWtQWEbPASkg/exec";
@@ -783,97 +784,91 @@ function startJoinCountdown(playAtMs, url, code) {
   }, 250);
 }
 
-// ── YOUTUBE IFrame API ────────────────────────────────────────
-let ytPlayer        = null;
-let ytPlayerReady   = false;
-let playTriggered   = false;  // ensures playVideo() fires exactly once
-let pendingPlayMs   = null;
-let pendingCode     = null;
-let pendingUrl      = null;
-let overlayTimer    = null;   // kept at module scope so resetApp() can clear it
-
-function loadYTApiIfNeeded() {
-  if (window.YT && window.YT.Player) return Promise.resolve();
-  return new Promise(resolve => {
-    const tag = document.createElement('script');
-    tag.src = 'https://www.youtube.com/iframe_api';
-    window.onYouTubeIframeAPIReady = resolve;
-    document.head.appendChild(tag);
-  });
-}
-
-function tryPlay() {
-  if (playTriggered || !ytPlayerReady) return;
-  if (Date.now() < pendingPlayMs) return;  // not time yet
-  playTriggered = true;
-  ytPlayer.playVideo();
-}
-
 // ── PLAYER ────────────────────────────────────────────────────
-async function launchPlayer(url, playAtMs, code) {
+let ytPlayer       = null;
+let ytPlayerReady  = false;
+let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
+let overlayTimerRef = null;
+
+// Called by YouTube IFrame API once script loads
+function onYouTubeIframeAPIReady() {
+  // Player will be created in launchPlayer; this is just the global hook YT API needs.
+}
+
+function launchPlayer(url, playAtMs, code) {
   const videoId = extractVideoId(url);
 
-  // Hide main card + how section
   document.getElementById('main-card').style.display   = 'none';
   document.getElementById('how-section').style.display = 'none';
   document.querySelector('.logo').style.marginBottom   = '24px';
 
-  document.getElementById('player-screen').classList.add('active');
+  const playerScreen = document.getElementById('player-screen');
+  playerScreen.classList.add('active');
 
   const overlay    = document.getElementById('player-overlay');
   const overlayNum = document.getElementById('overlay-count');
 
-  // Reset play state for this session
-  pendingPlayMs  = playAtMs;
-  pendingCode    = code;
-  pendingUrl     = url;
-  ytPlayerReady  = false;
-  playTriggered  = false;
-
-  // Ensure the YT API script is loaded
-  await loadYTApiIfNeeded();
-
-  // Destroy previous player and ensure a clean target div exists
+  // Destroy any previous YT player instance
   if (ytPlayer) {
     try { ytPlayer.destroy(); } catch (_) {}
     ytPlayer = null;
+    ytPlayerReady = false;
   }
+
+  // Replace iframe element fresh (YT API needs a plain div or empty iframe)
   const container = document.getElementById('video-container');
-  let target = document.getElementById('yt-iframe');
-  if (!target) {
-    target = document.createElement('div');
-    target.id = 'yt-iframe';
-    container.insertBefore(target, overlay);
-  }
+  const oldIframe = document.getElementById('yt-iframe');
+  if (oldIframe) oldIframe.remove();
+  const playerDiv = document.createElement('div');
+  playerDiv.id = 'yt-iframe';
+  // Insert before the overlay so overlay stays on top
+  container.insertBefore(playerDiv, overlay);
 
-  ytPlayer = new YT.Player('yt-iframe', {
-    videoId,
-    width: '100%',
-    height: '100%',
-    playerVars: { autoplay: 0, rel: 0, modestbranding: 1, playsinline: 1 },
-    events: {
-      onReady() {
-        ytPlayerReady = true;
-        tryPlay();  // play immediately if countdown already expired
-      },
-      onError() { showFallback(pendingUrl, pendingPlayMs); },
-    }
-  });
+  pendingPlayAt = playAtMs;
 
-  // Countdown overlay — also drives the play trigger
-  clearInterval(overlayTimer);
-  overlayTimer = setInterval(() => {
-    const secsLeft = Math.ceil((pendingPlayMs - Date.now()) / 1000);
+  // Countdown overlay — runs independently of player readiness
+  clearInterval(overlayTimerRef);
+  overlayTimerRef = setInterval(() => {
+    const secsLeft = Math.ceil((pendingPlayAt - Date.now()) / 1000);
     if (secsLeft <= 0) {
-      clearInterval(overlayTimer);
+      clearInterval(overlayTimerRef);
       overlay.classList.add('hidden');
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
-      tryPlay();  // play if player is ready; onReady will call tryPlay() if not yet
+      // If player is already ready, play now; otherwise pendingPlayAt handles it in onReady
+      if (ytPlayerReady) {
+        ytPlayer.playVideo();
+      }
       return;
     }
     overlayNum.textContent = secsLeft;
     if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
   }, 100);
+
+  // Create YT Player — onReady fires when it's actually usable
+  ytPlayer = new YT.Player('yt-iframe', {
+    videoId,
+    playerVars: {
+      autoplay: 0,
+      rel: 0,
+      modestbranding: 1,
+      enablejsapi: 1,
+    },
+    events: {
+      onReady: (event) => {
+        ytPlayerReady = true;
+        const delay = Math.max(0, pendingPlayAt - Date.now());
+        if (delay === 0) {
+          // Countdown already finished, play immediately
+          event.target.playVideo();
+        }
+        // else the overlayTimer interval will call playVideo() when time comes
+      },
+      onError: (event) => {
+        // Error codes 2, 5, 100, 101, 150 = embedding not allowed or video unavailable
+        showFallback(url, playAtMs);
+      },
+    },
+  });
 }
 
 function showFallback(url, playAtMs) {
@@ -894,29 +889,27 @@ function resetApp() {
   // Clear timers
   clearInterval(createCountdownTimer);
   clearInterval(playbackTimer);
-  clearInterval(overlayTimer);
   clearTimeout(codeCheckTimeout);
 
-  // Reset YT player
+  // Destroy YT player and restore iframe placeholder
+  clearInterval(overlayTimerRef);
   if (ytPlayer) {
     try { ytPlayer.destroy(); } catch (_) {}
     ytPlayer = null;
+    ytPlayerReady = false;
+    pendingPlayAt = null;
   }
-  ytPlayerReady = false;
-  playTriggered = false;
-  pendingPlayMs = null;
-  pendingCode   = null;
-  pendingUrl    = null;
-  // Restore the div for next use
+  // Restore a fresh iframe element for next use
   const container = document.getElementById('video-container');
-  if (!document.getElementById('yt-iframe')) {
-    const div = document.createElement('div');
-    div.id = 'yt-iframe';
-    const overlay = document.getElementById('player-overlay');
-    container.insertBefore(div, overlay);
-  }
+  const oldDiv = document.getElementById('yt-iframe');
+  if (oldDiv) oldDiv.remove();
+  const freshIframe = document.createElement('iframe');
+  freshIframe.id = 'yt-iframe';
+  freshIframe.setAttribute('allowfullscreen', '');
+  freshIframe.setAttribute('allow', 'autoplay; encrypted-media');
+  const overlay = document.getElementById('player-overlay');
+  container.insertBefore(freshIframe, overlay);
 
-  // Reset player screen
   document.getElementById('player-screen').classList.remove('active');
   document.getElementById('player-overlay').classList.remove('hidden');
   document.getElementById('overlay-count').textContent = '—';

@@ -484,7 +484,7 @@
       </div>
       <h1>Sync<span>Play</span></h1>
     </div>
-    <p>Listen togetherqwe, in sync</p>
+    <p>Listen together...., in sync</p>
   </div>
 
   <!-- MAIN CARD -->
@@ -831,31 +831,12 @@ function launchPlayer(url, playAtMs, code) {
 
   pendingPlayAt = playAtMs;
 
-  // Countdown overlay — runs independently of player readiness
-  clearInterval(overlayTimerRef);
-  overlayTimerRef = setInterval(() => {
-    const secsLeft = Math.ceil((pendingPlayAt - Date.now()) / 1000);
-    if (secsLeft <= 0) {
-      clearInterval(overlayTimerRef);
-      overlay.classList.add('hidden');
-      document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
-      // If player is already ready, play now; otherwise pendingPlayAt handles it in onReady
-      if (ytPlayerReady) {
-        const drift = (Date.now() - pendingPlayAt) / 1000;
-        if (drift > 0.1) ytPlayer.seekTo(drift, true);
-        ytPlayer.playVideo();
-      }
-      return;
-    }
-    overlayNum.textContent = secsLeft;
-    if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
-  }, 100);
-
-  // Create YT Player — onReady fires when it's actually usable
+  // Create YT Player immediately so it starts buffering during the countdown
   ytPlayer = new YT.Player('yt-iframe', {
     videoId,
     playerVars: {
       autoplay: 0,
+      start: 1,       // preload from second 1 — our sync start point
       rel: 0,
       modestbranding: 1,
       enablejsapi: 1,
@@ -863,21 +844,43 @@ function launchPlayer(url, playAtMs, code) {
     events: {
       onReady: (event) => {
         ytPlayerReady = true;
-        const msLeft = pendingPlayAt - Date.now();
-        if (msLeft <= 0) {
-          // We're already past the sync point — seek to correct position and play
-          const seekTo = Math.abs(msLeft) / 1000;
-          event.target.seekTo(seekTo, true);
-          event.target.playVideo();
-        }
-        // else the overlayTimer interval will call playVideo() at the right moment
+        // Seek to second 1 and pause — forces buffering while countdown runs
+        event.target.seekTo(1, true);
+        event.target.pauseVideo();
       },
-      onError: (event) => {
-        // Error codes 2, 5, 100, 101, 150 = embedding not allowed or video unavailable
-        showFallback(url, playAtMs);
-      },
+      onError: () => showFallback(url, playAtMs),
     },
   });
+
+  // Countdown overlay — runs independently; fires play exactly at sync time
+  clearInterval(overlayTimerRef);
+  overlayTimerRef = setInterval(() => {
+    const msLeft   = pendingPlayAt - Date.now();
+    const secsLeft = Math.ceil(msLeft / 1000);
+
+    if (msLeft <= 0) {
+      clearInterval(overlayTimerRef);
+      overlay.classList.add('hidden');
+      document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
+      if (ytPlayerReady) {
+        ytPlayer.seekTo(1, true);
+        ytPlayer.playVideo();
+      } else {
+        // Player not ready yet — wait for it then play immediately
+        const waitAndPlay = setInterval(() => {
+          if (ytPlayerReady) {
+            clearInterval(waitAndPlay);
+            ytPlayer.seekTo(1, true);
+            ytPlayer.playVideo();
+          }
+        }, 50);
+      }
+      return;
+    }
+
+    overlayNum.textContent = secsLeft;
+    if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
+  }, 100);
 }
 
 function showFallback(url, playAtMs) {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>SSSyncPlay — Listen Together</title>
+<title>asdSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -352,8 +352,6 @@
     transition: opacity 0.5s;
   }
   .player-overlay.hidden { opacity: 0; pointer-events: none; }
-  .player-overlay.tap-to-play { cursor: pointer; }
-  .player-overlay.tap-to-play .big-label { color: var(--accent); font-weight: 700; letter-spacing: 2px; }
   .player-overlay .big-count {
     font-family: 'Syne', sans-serif;
     font-weight: 800;
@@ -369,6 +367,41 @@
     text-transform: uppercase;
     letter-spacing: 3px;
     margin-top: 8px;
+  }
+
+  /* ── TAP TO JOIN (iOS) ───────────────────────────────────── */
+  .tap-to-join {
+    display: none;
+    text-align: center;
+    padding: 18px 0 6px;
+  }
+  .tap-to-join.active { display: block; animation: fadeUp 0.3s ease both; }
+  .tap-to-join .tap-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 14px 28px;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    box-shadow: 0 4px 20px #ff3c5f44;
+    animation: pulse 2s ease-in-out infinite;
+    transition: all 0.2s;
+  }
+  .tap-to-join .tap-btn:hover { background: #ff5577; transform: translateY(-1px); }
+  .tap-to-join .tap-btn:active { transform: translateY(0); }
+  .tap-to-join .tap-hint {
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 8px;
+    letter-spacing: 1px;
   }
 
   .fallback-banner {
@@ -510,6 +543,10 @@
         </div>
       </div>
       <div class="status-msg" id="create-msg"></div>
+      <div class="tap-to-join" id="create-tap-to-join">
+        <button class="tap-btn" id="create-tap-btn" onclick="handleTapToJoin('create')">▶ Tap to Join Timer</button>
+        <span class="tap-hint">Required on iOS to enable playback</span>
+      </div>
       <div class="countdown-wrap" id="create-countdown">
         <div class="countdown-num" id="create-countdown-num">20</div>
         <div class="countdown-label">seconds for friend to join</div>
@@ -527,6 +564,10 @@
         </div>
       </div>
       <div class="status-msg" id="join-msg"></div>
+      <div class="tap-to-join" id="join-tap-to-join">
+        <button class="tap-btn" id="join-tap-btn" onclick="handleTapToJoin('join')">▶ Tap to Join Timer</button>
+        <span class="tap-hint">Required on iOS to enable playback</span>
+      </div>
       <div class="countdown-wrap" id="join-countdown">
         <div class="countdown-num" id="join-countdown-num">20</div>
         <div class="countdown-label">seconds until playback</div>
@@ -575,73 +616,18 @@
 // ── CONFIG ───────────────────────────────────────────────────
 const GAS_URL = "https://script.google.com/macros/s/AKfycby3eZVNP3bO3wu_ioFmimKaips7xNPVphMPsO3zsSBQHXPCeP93bioflWtQWEbPASkg/exec";
 
+// ── iOS DETECTION ─────────────────────────────────────────────
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
 // ── STATE ─────────────────────────────────────────────────────
 let currentTab       = 'create';
 let createCountdownTimer = null;
 let playbackTimer        = null;
 let codeCheckTimeout     = null;
 
-// ── CLOCK SYNC ───────────────────────────────────────────────
-// Offset in ms: corrected time = Date.now() + clockOffset
-let clockOffset = 0;
-let clockSyncInterval = null;
-
-// Returns the best estimate of "true" current time in ms
-function correctedNow() {
-  return Date.now() + clockOffset;
-}
-
-// Fetch true time from a time API, accounting for network round-trip
-async function fetchTrueTime(apiUrl) {
-  const t0  = Date.now();
-  const res = await fetch(apiUrl);
-  const rtt = Date.now() - t0;
-  const data = await res.json();
-  // Both APIs return unixtime in seconds
-  const serverMs = data.unixtime * 1000;
-  // The server timestamp represents the time at the server when it responded.
-  // The best estimate of "now" on the server is serverMs + rtt/2
-  // (request took ~rtt/2 to reach server, response took ~rtt/2 to come back)
-  // So: trueNow ≈ serverMs + rtt/2
-  // offset = trueNow - Date.now() = serverMs + rtt/2 - Date.now()
-  const localNow = Date.now();
-  return (serverMs + Math.round(rtt / 2)) - localNow;
-}
-
-// Try primary API, fall back to secondary, fall back to 0
-async function syncClock() {
-  const apis = [
-    'https://time.now/developer/api/ip',
-    'https://worldtimeapi.org/api/timezone/Etc/UTC'
-  ];
-  for (const api of apis) {
-    try {
-      const offset = await fetchTrueTime(api);
-      clockOffset = offset;
-      console.log(`[SyncPlay] Clock synced via ${api} — offset: ${offset}ms`);
-      return;
-    } catch (e) {
-      console.warn(`[SyncPlay] Clock sync failed for ${api}:`, e.message);
-    }
-  }
-  console.warn('[SyncPlay] All clock APIs failed, using device time (offset=0)');
-}
-
-// Start periodic re-sync (every 3 seconds) during countdowns
-function startClockResync() {
-  stopClockResync();
-  clockSyncInterval = setInterval(() => syncClock(), 3000);
-}
-
-function stopClockResync() {
-  if (clockSyncInterval) {
-    clearInterval(clockSyncInterval);
-    clockSyncInterval = null;
-  }
-}
-
-// Initial sync on page load
-syncClock();
+// Pending data for iOS tap-to-join flow
+let pendingSync = { playAtMs: null, url: null, code: null, panel: null };
 
 // ── TAB SWITCH ────────────────────────────────────────────────
 function switchTab(tab) {
@@ -740,8 +726,7 @@ async function handleCreate() {
 
   if (!url)  return showMsg('create-msg', 'Please paste a YouTube link.', 'error');
   if (!code) return showMsg('create-msg', 'Please enter a code for your friend.', 'error');
-  const videoId = extractVideoId(url);
-  if (!videoId) return showMsg('create-msg', 'That doesn\'t look like a valid YouTube URL.', 'error');
+  if (!extractVideoId(url)) return showMsg('create-msg', 'That doesn\'t look like a valid YouTube URL.', 'error');
 
   setLoading('create-btn', true);
 
@@ -772,34 +757,44 @@ async function handleCreate() {
 }
 
 function startCreateCountdown(playAtMs, url, code) {
-  const wrap = document.getElementById('create-countdown');
-  const num  = document.getElementById('create-countdown-num');
+  if (isIOS) {
+    // iOS: show "Tap to Join Timer" button, wait for user gesture
+    pendingSync = { playAtMs, url, code, panel: 'create' };
+    document.getElementById('create-tap-to-join').classList.add('active');
+    return;
+  }
+  // Non-iOS: prime video immediately (auto), then start countdown
+  primeVideoAndStartCountdown(playAtMs, url, code, 'create');
+}
+
+function primeVideoAndStartCountdown(playAtMs, url, code, panel) {
+  // Prime the YT player: play → pause → seek to 0, so it's "unlocked"
+  primeYouTubePlayer(url, () => {
+    runCountdown(playAtMs, url, code, panel);
+  });
+}
+
+function runCountdown(playAtMs, url, code, panel) {
+  const wrap = document.getElementById(panel + '-countdown');
+  const num  = document.getElementById(panel + '-countdown-num');
   wrap.classList.add('active');
-
-  // Launch the player screen immediately with the filler video + countdown overlay
-  launchPlayer(url, playAtMs, code);
-
-  // Start periodic clock re-sync during countdown
-  startClockResync();
 
   clearInterval(createCountdownTimer);
 
   createCountdownTimer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - correctedNow()) / 1000);
+    // Epoch-based: always use play_at_ms minus local time
+    const msLeft   = playAtMs - Date.now();
+    const secsLeft = Math.ceil(msLeft / 1000);
 
-    if (secsLeft <= 0) {
+    if (msLeft <= 0) {
       clearInterval(createCountdownTimer);
       wrap.classList.remove('active');
-      stopClockResync();
+      launchPlayer(url, playAtMs, code);
       return;
     }
 
     num.textContent = secsLeft;
-
-    // Colour shift as it gets close
-    if (secsLeft <= 5) {
-      num.style.color = 'var(--green)';
-    }
+    if (secsLeft <= 5) num.style.color = 'var(--green)';
   }, 250);
 }
 
@@ -839,31 +834,72 @@ async function handleJoin() {
 }
 
 function startJoinCountdown(playAtMs, url, code) {
-  const wrap = document.getElementById('join-countdown');
-  const num  = document.getElementById('join-countdown-num');
-  wrap.classList.add('active');
-
   document.getElementById('join-btn').textContent = 'Synced ✓';
 
-  // Launch the player screen immediately with the filler video + countdown overlay
-  launchPlayer(url, playAtMs, code);
+  if (isIOS) {
+    pendingSync = { playAtMs, url, code, panel: 'join' };
+    document.getElementById('join-tap-to-join').classList.add('active');
+    return;
+  }
+  // Non-iOS: prime and go
+  primeVideoAndStartCountdown(playAtMs, url, code, 'join');
+}
 
-  // Start periodic clock re-sync during countdown
-  startClockResync();
+// ── TAP TO JOIN (iOS) & VIDEO PRIMING ─────────────────────────
+function handleTapToJoin(panel) {
+  // This runs inside a real user gesture (tap), so playVideo() is allowed on iOS
+  const { playAtMs, url, code } = pendingSync;
+  document.getElementById(panel + '-tap-to-join').classList.remove('active');
+  primeVideoAndStartCountdown(playAtMs, url, code, panel);
+}
 
-  const timer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - correctedNow()) / 1000);
+let primePlayer = null;
+let primePlayerReady = false;
 
-    if (secsLeft <= 0) {
-      clearInterval(timer);
-      wrap.classList.remove('active');
-      stopClockResync();
-      return;
-    }
+function primeYouTubePlayer(url, onDone) {
+  const videoId = extractVideoId(url);
+  primePlayerReady = false;
 
-    num.textContent = secsLeft;
-    if (secsLeft <= 5) num.style.color = 'var(--green)';
-  }, 250);
+  // Create a tiny hidden container for the priming player
+  let primeContainer = document.getElementById('prime-container');
+  if (!primeContainer) {
+    primeContainer = document.createElement('div');
+    primeContainer.id = 'prime-container';
+    primeContainer.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;overflow:hidden;';
+    document.body.appendChild(primeContainer);
+  }
+  // Clean up old prime player div
+  const oldDiv = document.getElementById('prime-player');
+  if (oldDiv) oldDiv.remove();
+  const div = document.createElement('div');
+  div.id = 'prime-player';
+  primeContainer.appendChild(div);
+
+  if (primePlayer) {
+    try { primePlayer.destroy(); } catch (_) {}
+    primePlayer = null;
+  }
+
+  primePlayer = new YT.Player('prime-player', {
+    videoId,
+    playerVars: { autoplay: 0, controls: 0, enablejsapi: 1, playsinline: 1 },
+    events: {
+      onReady: (event) => {
+        primePlayerReady = true;
+        // Play then immediately pause — this "unlocks" the media element
+        event.target.playVideo();
+        setTimeout(() => {
+          event.target.pauseVideo();
+          event.target.seekTo(0, true);
+          onDone();
+        }, 300);
+      },
+      onError: () => {
+        // If priming fails, still start the countdown
+        onDone();
+      },
+    },
+  });
 }
 
 // ── PLAYER ────────────────────────────────────────────────────
@@ -871,16 +907,6 @@ let ytPlayer       = null;
 let ytPlayerReady  = false;
 let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
 let overlayTimerRef = null;
-let fillerPlaying  = false;  // true once the filler video is actively playing
-let driftCorrectionRef = null; // interval for post-play drift correction
-let realVideoStarted  = false; // true once the intended video has been loaded
-
-// Filler video that plays during the countdown to unlock the media element on iOS
-const FILLER_VIDEO_ID = 'QggJzZdIYPI';
-
-// Detect iOS (includes iPhone, iPad, iPod — iPadOS 13+ reports as Mac so we check touch too)
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 // Called by YouTube IFrame API once script loads
 function onYouTubeIframeAPIReady() {
@@ -900,15 +926,20 @@ function launchPlayer(url, playAtMs, code) {
   const overlay    = document.getElementById('player-overlay');
   const overlayNum = document.getElementById('overlay-count');
 
-  pendingPlayAt = playAtMs;
-  fillerPlaying = false;
-
   // Destroy any previous YT player instance
   if (ytPlayer) {
     try { ytPlayer.destroy(); } catch (_) {}
     ytPlayer = null;
     ytPlayerReady = false;
   }
+  // Also destroy the prime player — no longer needed
+  if (primePlayer) {
+    try { primePlayer.destroy(); } catch (_) {}
+    primePlayer = null;
+    primePlayerReady = false;
+  }
+  const primeContainer = document.getElementById('prime-container');
+  if (primeContainer) primeContainer.remove();
 
   // Replace iframe element fresh
   const container = document.getElementById('video-container');
@@ -918,182 +949,73 @@ function launchPlayer(url, playAtMs, code) {
   playerDiv.id = 'yt-iframe';
   container.insertBefore(playerDiv, overlay);
 
-  // Create YT Player with the FILLER video so it plays during the countdown.
-  // On non-iOS, autoplay the filler immediately. On iOS, we'll show "Tap to Play".
+  pendingPlayAt = playAtMs;
+  let postPlayCorrected = false;
+
   ytPlayer = new YT.Player('yt-iframe', {
-    videoId: FILLER_VIDEO_ID,
+    videoId,
     playerVars: {
-      autoplay: isIOS ? 0 : 1,
-      playsinline: 1,
+      autoplay: 0,
       rel: 0,
       modestbranding: 1,
       enablejsapi: 1,
+      playsinline: 1,
     },
     events: {
       onReady: (event) => {
         ytPlayerReady = true;
-        if (!isIOS) {
-          // On Android/desktop, start filler immediately
-          event.target.playVideo();
-          fillerPlaying = true;
-        }
+        // Seek to 0 and pause — ready to go
+        event.target.seekTo(0, true);
+        event.target.pauseVideo();
       },
       onStateChange: (event) => {
-        // Track when filler actually starts playing (important for iOS tap-to-play)
-        if (event.data === YT.PlayerState.PLAYING) {
-          fillerPlaying = true;
+        // Post-play correction: once video actually starts playing (state 1 = PLAYING)
+        if (event.data === YT.PlayerState.PLAYING && !postPlayCorrected) {
+          postPlayCorrected = true;
+          const now = Date.now();
+          const elapsedSinceSync = (now - playAtMs) / 1000; // seconds since video should have started
+          const currentVideoTime = event.target.getCurrentTime();
+          const drift = elapsedSinceSync - currentVideoTime;
+
+          // If drift > 0.5s, correct by seeking to where the video should be
+          if (Math.abs(drift) > 0.5) {
+            const correctedTime = Math.max(0, elapsedSinceSync);
+            event.target.seekTo(correctedTime, true);
+          }
         }
       },
       onError: () => showFallback(url, playAtMs),
     },
   });
 
-  // On iOS, show "Tap to Play" overlay immediately so user can start the filler
-  if (isIOS) {
-    showTapToPlayFiller(overlay, overlayNum);
-  }
-
-  // Countdown overlay — runs independently; pre-buffers real video, then plays at sync time
+  // Countdown overlay — epoch-based timer
   clearInterval(overlayTimerRef);
-  let preBuffered = false; // true once we've loaded the real video and paused it
-
   overlayTimerRef = setInterval(() => {
-    const msLeft   = pendingPlayAt - correctedNow();
+    const msLeft   = pendingPlayAt - Date.now();
     const secsLeft = Math.ceil(msLeft / 1000);
-
-    // ~5 seconds before t=0: swap from filler to real video, let it play briefly, then pause at 0.
-    // This pre-buffers the real video so it's ready to unpause instantly at t=0.
-    if (!preBuffered && msLeft <= 5000 && msLeft > 0 && ytPlayerReady && fillerPlaying) {
-      preBuffered = true;
-      console.log('[SyncPlay] Pre-buffering real video...');
-      ytPlayer.loadVideoById({ videoId: videoId, startSeconds: 0 });
-      // Wait a moment for it to start loading, then pause at 0
-      setTimeout(() => {
-        if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
-          ytPlayer.pauseVideo();
-          ytPlayer.seekTo(0, true);
-          console.log('[SyncPlay] Real video pre-buffered and paused at 0');
-        }
-      }, 800);
-    }
 
     if (msLeft <= 0) {
       clearInterval(overlayTimerRef);
       overlay.classList.add('hidden');
-      overlay.classList.remove('tap-to-play');
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
-
-      // Video is already loaded and paused at 0 — just unpause
-      const doPlay = () => {
-        const lateMs = correctedNow() - pendingPlayAt;
-        const startSec = Math.max(0, lateMs / 1000);
-        console.log(`[SyncPlay] Playing real video, late by ${Math.round(lateMs)}ms, seeking to ${startSec.toFixed(2)}s`);
-        if (startSec > 0.5) {
-          ytPlayer.seekTo(startSec, true);
-        }
-        ytPlayer.playVideo();
-        realVideoStarted = true;
-        startDriftCorrection();
-      };
-
       if (ytPlayerReady) {
-        doPlay();
+        ytPlayer.seekTo(0, true);
+        ytPlayer.playVideo();
       } else {
         const waitAndPlay = setInterval(() => {
           if (ytPlayerReady) {
             clearInterval(waitAndPlay);
-            doPlay();
+            ytPlayer.seekTo(0, true);
+            ytPlayer.playVideo();
           }
         }, 50);
       }
       return;
     }
 
-    // Update countdown number (keep it visible even with tap-to-play)
     overlayNum.textContent = secsLeft;
     if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
   }, 100);
-}
-
-// Show "Tap to Play" on the overlay for iOS — starts the filler video on tap
-function showTapToPlayFiller(overlay, overlayNum) {
-  overlay.classList.remove('hidden');
-  overlay.classList.add('tap-to-play');
-  // Show the tap prompt above the countdown
-  const label = overlay.querySelector('.big-label');
-  label.textContent = 'tap to start';
-
-  const handler = () => {
-    overlay.removeEventListener('click', handler);
-    overlay.classList.remove('tap-to-play');
-    label.textContent = 'starting in';
-    // Start the filler video — this is a real user gesture so iOS allows it
-    if (ytPlayer && ytPlayerReady) {
-      ytPlayer.playVideo();
-    }
-  };
-  overlay.addEventListener('click', handler);
-}
-
-// ── DRIFT CORRECTION ──────────────────────────────────────────
-// After the real video starts, wait for it to reach 2s of playback,
-// then correct once. Then correct once more 3s later. Uses correctedNow()
-// (which already has the clock offset from initial sync) — no extra API calls.
-function startDriftCorrection() {
-  stopDriftCorrection();
-
-  // Poll every 500ms waiting for the video to reach 2 seconds of actual playback
-  let correctionsDone = 0;
-  driftCorrectionRef = setInterval(() => {
-    if (!ytPlayer || !realVideoStarted || typeof ytPlayer.getCurrentTime !== 'function') return;
-
-    const state = ytPlayer.getPlayerState();
-    if (state !== YT.PlayerState.PLAYING) return;
-
-    const actualPos = ytPlayer.getCurrentTime();
-
-    // First correction: when video reaches 2 seconds of playback
-    if (correctionsDone === 0 && actualPos >= 2) {
-      applyDriftCorrection();
-      correctionsDone = 1;
-      // Schedule the second (and final) correction 3 seconds from now
-      setTimeout(() => {
-        applyDriftCorrection();
-        correctionsDone = 2;
-        stopDriftCorrection();
-        console.log('[SyncPlay] Drift correction complete (2 of 2)');
-      }, 3000);
-      // Stop the polling interval — the second correction is on a timeout
-      clearInterval(driftCorrectionRef);
-      driftCorrectionRef = null;
-    }
-  }, 500);
-}
-
-function applyDriftCorrection() {
-  if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
-  const state = ytPlayer.getPlayerState();
-  if (state !== YT.PlayerState.PLAYING) return;
-
-  const actualPos   = ytPlayer.getCurrentTime();
-  const expectedPos = (correctedNow() - pendingPlayAt) / 1000;
-  const drift       = expectedPos - actualPos;
-
-  console.log(`[SyncPlay] Drift check: actual=${actualPos.toFixed(2)}s, expected=${expectedPos.toFixed(2)}s, drift=${drift.toFixed(2)}s`);
-
-  // Only seek if drift is more than 0.3s
-  if (Math.abs(drift) > 0.3) {
-    const seekTo = actualPos + drift;
-    console.log(`[SyncPlay] Correcting: seeking to ${seekTo.toFixed(2)}s`);
-    ytPlayer.seekTo(seekTo, true);
-  }
-}
-
-function stopDriftCorrection() {
-  if (driftCorrectionRef) {
-    clearInterval(driftCorrectionRef);
-    driftCorrectionRef = null;
-  }
 }
 
 function showFallback(url, playAtMs) {
@@ -1115,8 +1037,6 @@ function resetApp() {
   clearInterval(createCountdownTimer);
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
-  stopClockResync();
-  stopDriftCorrection();
 
   // Destroy YT player and restore iframe placeholder
   clearInterval(overlayTimerRef);
@@ -1125,9 +1045,17 @@ function resetApp() {
     ytPlayer = null;
     ytPlayerReady = false;
     pendingPlayAt = null;
-    fillerPlaying = false;
-    realVideoStarted = false;
   }
+  if (primePlayer) {
+    try { primePlayer.destroy(); } catch (_) {}
+    primePlayer = null;
+    primePlayerReady = false;
+  }
+  const primeContainer = document.getElementById('prime-container');
+  if (primeContainer) primeContainer.remove();
+
+  pendingSync = { playAtMs: null, url: null, code: null, panel: null };
+
   // Restore a fresh iframe element for next use
   const container = document.getElementById('video-container');
   const oldDiv = document.getElementById('yt-iframe');
@@ -1141,12 +1069,8 @@ function resetApp() {
 
   document.getElementById('player-screen').classList.remove('active');
   document.getElementById('player-overlay').classList.remove('hidden');
-  document.getElementById('player-overlay').classList.remove('tap-to-play');
   document.getElementById('overlay-count').textContent = '—';
   document.getElementById('overlay-count').style.color = '';
-  // Restore overlay label in case it was changed to "tap to play"
-  const overlayLabel = document.querySelector('#player-overlay .big-label');
-  if (overlayLabel) overlayLabel.textContent = 'starting in';
   document.getElementById('fallback-banner').classList.remove('show');
 
   // Reset create panel
@@ -1157,6 +1081,7 @@ function resetApp() {
   document.getElementById('create-countdown').classList.remove('active');
   document.getElementById('create-countdown-num').textContent = '20';
   document.getElementById('create-countdown-num').style.color = '';
+  document.getElementById('create-tap-to-join').classList.remove('active');
   document.getElementById('create-btn').disabled = false;
   document.getElementById('create-btn').textContent = 'Generate Sync Code';
 
@@ -1167,6 +1092,7 @@ function resetApp() {
   document.getElementById('join-countdown').classList.remove('active');
   document.getElementById('join-countdown-num').textContent = '20';
   document.getElementById('join-countdown-num').style.color = '';
+  document.getElementById('join-tap-to-join').classList.remove('active');
   document.getElementById('join-btn').disabled = false;
   document.getElementById('join-btn').textContent = 'Join & Sync';
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>abcSyncPlay — Listen Together</title>
+<title>SyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -484,7 +484,7 @@
       <div class="logo-icon">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm-2 13V8l6 4-6 4z"/></svg>
       </div>
-      <h1>Sync<span>Play</span></h1>
+      <h1>SSync<span>Play</span></h1>
     </div>
     <p>Listen together...., in sync</p>
   </div>
@@ -627,10 +627,10 @@ async function syncClock() {
   console.warn('[SyncPlay] All clock APIs failed, using device time (offset=0)');
 }
 
-// Start periodic re-sync (every 3 seconds) during countdowns
+// Start periodic re-sync (every 1 second) during countdowns
 function startClockResync() {
   stopClockResync();
-  clockSyncInterval = setInterval(() => syncClock(), 3000);
+  clockSyncInterval = setInterval(() => syncClock(), 1000);
 }
 
 function stopClockResync() {
@@ -872,8 +872,8 @@ let ytPlayerReady  = false;
 let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
 let overlayTimerRef = null;
 let fillerPlaying  = false;  // true once the filler video is actively playing
-let realVideoSwapped = false; // true once we've called loadVideoById for the real video
-let playbackCorrected = false; // true once we've done the one-time seek correction
+let driftCorrectionRef = null; // interval for post-play drift correction
+let realVideoStarted  = false; // true once the intended video has been loaded
 
 // Filler video that plays during the countdown to unlock the media element on iOS
 const FILLER_VIDEO_ID = 'QggJzZdIYPI';
@@ -902,8 +902,6 @@ function launchPlayer(url, playAtMs, code) {
 
   pendingPlayAt = playAtMs;
   fillerPlaying = false;
-  realVideoSwapped = false;
-  playbackCorrected = false;
 
   // Destroy any previous YT player instance
   if (ytPlayer) {
@@ -943,13 +941,7 @@ function launchPlayer(url, playAtMs, code) {
       onStateChange: (event) => {
         // Track when filler actually starts playing (important for iOS tap-to-play)
         if (event.data === YT.PlayerState.PLAYING) {
-          if (!realVideoSwapped) {
-            fillerPlaying = true;
-          } else if (!playbackCorrected) {
-            // Real video just started playing — correct the playback position
-            playbackCorrected = true;
-            correctPlaybackPosition();
-          }
+          fillerPlaying = true;
         }
       },
       onError: () => showFallback(url, playAtMs),
@@ -975,9 +967,15 @@ function launchPlayer(url, playAtMs, code) {
 
       // Swap from filler to the real video using loadVideoById.
       // Since the player is already playing (filler), iOS should allow this.
+      // Calculate how many seconds late we are — the video should start at this offset.
       const doSwap = () => {
-        realVideoSwapped = true;
-        ytPlayer.loadVideoById({ videoId: videoId, startSeconds: 0 });
+        const lateMs = correctedNow() - pendingPlayAt;
+        const startSec = Math.max(0, lateMs / 1000);
+        console.log(`[SyncPlay] Swapping to real video, late by ${Math.round(lateMs)}ms, starting at ${startSec.toFixed(2)}s`);
+        ytPlayer.loadVideoById({ videoId: videoId, startSeconds: startSec });
+        realVideoStarted = true;
+        // Start drift correction — runs every 2s for the first 10s of playback
+        startDriftCorrection();
       };
 
       if (ytPlayerReady && fillerPlaying) {
@@ -1020,29 +1018,54 @@ function showTapToPlayFiller(overlay, overlayNum) {
   overlay.addEventListener('click', handler);
 }
 
-// One-time playback correction: when the real video starts playing,
-// check how many seconds late it is vs the intended play_at_ms,
-// then seek forward to compensate. Uses one final clock sync for accuracy.
-async function correctPlaybackPosition() {
-  if (!ytPlayer || !pendingPlayAt) return;
+// ── DRIFT CORRECTION ──────────────────────────────────────────
+// After the real video starts, check every 2s for the first 10s
+// that the video's playback position matches where it should be.
+// Expected position = (correctedNow() - pendingPlayAt) / 1000
+function startDriftCorrection() {
+  stopDriftCorrection();
+  let checksRemaining = 5; // 5 checks × 2s = 10 seconds of correction
 
-  // Do one fresh clock sync for maximum accuracy at this critical moment
-  await syncClock();
+  driftCorrectionRef = setInterval(() => {
+    checksRemaining--;
 
-  const now = correctedNow();
-  const lateByMs = now - pendingPlayAt; // how many ms after play_at_ms we are
-  const lateBySec = lateByMs / 1000;
+    if (!ytPlayer || !realVideoStarted || typeof ytPlayer.getCurrentTime !== 'function') {
+      if (checksRemaining <= 0) stopDriftCorrection();
+      return;
+    }
 
-  if (lateBySec > 0.5) {
-    // Only correct if we're more than 500ms late (avoid unnecessary micro-seeks)
-    console.log(`[SyncPlay] Video started ${lateBySec.toFixed(1)}s late — seeking forward to compensate`);
-    ytPlayer.seekTo(lateBySec, true);
-  } else {
-    console.log(`[SyncPlay] Video started within 500ms of target — no correction needed`);
+    // Only correct if the video is actually playing
+    const state = ytPlayer.getPlayerState();
+    if (state !== YT.PlayerState.PLAYING) {
+      if (checksRemaining <= 0) stopDriftCorrection();
+      return;
+    }
+
+    const actualPos   = ytPlayer.getCurrentTime();           // where video IS (seconds)
+    const expectedPos = (correctedNow() - pendingPlayAt) / 1000; // where video SHOULD be
+    const drift       = expectedPos - actualPos;             // positive = video is behind
+
+    console.log(`[SyncPlay] Drift check: actual=${actualPos.toFixed(2)}s, expected=${expectedPos.toFixed(2)}s, drift=${drift.toFixed(2)}s`);
+
+    // Only seek if drift is more than 0.5s (avoid micro-corrections that cause stutter)
+    if (Math.abs(drift) > 0.5) {
+      const seekTo = actualPos + drift;
+      console.log(`[SyncPlay] Correcting drift: seeking to ${seekTo.toFixed(2)}s`);
+      ytPlayer.seekTo(seekTo, true);
+    }
+
+    if (checksRemaining <= 0) {
+      stopDriftCorrection();
+      console.log('[SyncPlay] Drift correction complete');
+    }
+  }, 2000);
+}
+
+function stopDriftCorrection() {
+  if (driftCorrectionRef) {
+    clearInterval(driftCorrectionRef);
+    driftCorrectionRef = null;
   }
-
-  // Stop the clock resync — we're done syncing
-  stopClockResync();
 }
 
 function showFallback(url, playAtMs) {
@@ -1065,6 +1088,7 @@ function resetApp() {
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
   stopClockResync();
+  stopDriftCorrection();
 
   // Destroy YT player and restore iframe placeholder
   clearInterval(overlayTimerRef);
@@ -1074,8 +1098,7 @@ function resetApp() {
     ytPlayerReady = false;
     pendingPlayAt = null;
     fillerPlaying = false;
-    realVideoSwapped = false;
-    playbackCorrected = false;
+    realVideoStarted = false;
   }
   // Restore a fresh iframe element for next use
   const container = document.getElementById('video-container');

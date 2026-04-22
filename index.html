@@ -185,6 +185,7 @@
     outline: none;
     transition: border-color 0.2s, box-shadow 0.2s;
     -webkit-appearance: none;
+    appearance: none;
   }
   input:focus {
     border-color: var(--accent);
@@ -351,6 +352,8 @@
     transition: opacity 0.5s;
   }
   .player-overlay.hidden { opacity: 0; pointer-events: none; }
+  .player-overlay.tap-to-play { cursor: pointer; }
+  .player-overlay.tap-to-play .big-label { color: var(--accent); font-weight: 700; letter-spacing: 2px; }
   .player-overlay .big-count {
     font-family: 'Syne', sans-serif;
     font-weight: 800;
@@ -483,7 +486,7 @@
       </div>
       <h1>Sync<span>Play</span></h1>
     </div>
-    <p>Listen together, in sync</p>
+    <p>Listen together...., in sync</p>
   </div>
 
   <!-- MAIN CARD -->
@@ -567,6 +570,7 @@
 
 </div><!-- /app -->
 
+<script src="https://www.youtube.com/iframe_api"></script>
 <script>
 // ── CONFIG ───────────────────────────────────────────────────
 const GAS_URL = "https://script.google.com/macros/s/AKfycby3eZVNP3bO3wu_ioFmimKaips7xNPVphMPsO3zsSBQHXPCeP93bioflWtQWEbPASkg/exec";
@@ -618,8 +622,13 @@ function setLoading(btnId, loading) {
 
 async function gasCall(params) {
   const url = GAS_URL + '?' + new URLSearchParams(params).toString();
+  const t0   = Date.now();
   const res  = await fetch(url);
-  return res.json();
+  const data = await res.json();
+  const rtt  = Date.now() - t0;
+  // Shift play_at_ms forward by half RTT so both devices converge on the same wall-clock moment
+  if (data.play_at_ms) data.play_at_ms += Math.round(rtt / 2);
+  return data;
 }
 
 function extractVideoId(url) {
@@ -669,7 +678,11 @@ async function handleCreate() {
 
   if (!url)  return showMsg('create-msg', 'Please paste a YouTube link.', 'error');
   if (!code) return showMsg('create-msg', 'Please enter a code for your friend.', 'error');
-  if (!extractVideoId(url)) return showMsg('create-msg', 'That doesn\'t look like a valid YouTube URL.', 'error');
+  const videoId = extractVideoId(url);
+  if (!videoId) return showMsg('create-msg', 'That doesn\'t look like a valid YouTube URL.', 'error');
+
+  // Prime the YT player on iOS during this user gesture (synchronous call)
+  primePlayerForIOS(videoId);
 
   setLoading('create-btn', true);
 
@@ -748,6 +761,10 @@ async function handleJoin() {
     const playAtMs = res.play_at_ms;
     const url      = res.url;
 
+    // Prime the YT player on iOS now that we have the URL (still within user gesture chain)
+    const joinVideoId = extractVideoId(url);
+    if (joinVideoId) primePlayerForIOS(joinVideoId);
+
     setInputState('join-code', 'join-code-status', 'valid', '✓');
     showMsg('join-msg', '✅ Code found! Syncing…', 'success');
 
@@ -783,69 +800,199 @@ function startJoinCountdown(playAtMs, url, code) {
 }
 
 // ── PLAYER ────────────────────────────────────────────────────
+let ytPlayer       = null;
+let ytPlayerReady  = false;
+let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
+let overlayTimerRef = null;
+let iosMediaUnlocked = false; // tracks whether we've primed the media element on iOS
+
+// Detect iOS (includes iPhone, iPad, iPod — iPadOS 13+ reports as Mac so we check touch too)
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+// Called by YouTube IFrame API once script loads
+function onYouTubeIframeAPIReady() {
+  // Player will be created in launchPlayer; this is just the global hook YT API needs.
+}
+
+// Prime the YT player on iOS during a real user gesture to unlock media playback.
+// Must be called synchronously inside a click/tap handler.
+function primePlayerForIOS(videoId) {
+  if (!isIOS) return;
+
+  // Destroy any leftover player
+  if (ytPlayer) {
+    try { ytPlayer.destroy(); } catch (_) {}
+    ytPlayer = null;
+    ytPlayerReady = false;
+  }
+
+  const container = document.getElementById('video-container');
+  const oldEl = document.getElementById('yt-iframe');
+  if (oldEl) oldEl.remove();
+  const playerDiv = document.createElement('div');
+  playerDiv.id = 'yt-iframe';
+  const overlay = document.getElementById('player-overlay');
+  container.insertBefore(playerDiv, overlay);
+
+  ytPlayer = new YT.Player('yt-iframe', {
+    videoId,
+    playerVars: {
+      autoplay: 0,
+      playsinline: 1,
+      rel: 0,
+      modestbranding: 1,
+      enablejsapi: 1,
+    },
+    events: {
+      onReady: (event) => {
+        ytPlayerReady = true;
+        // Quick play→pause to unlock the media element on iOS
+        event.target.playVideo();
+        setTimeout(() => {
+          event.target.pauseVideo();
+          event.target.seekTo(0, true);
+          iosMediaUnlocked = true;
+        }, 200);
+      },
+      onError: () => {}, // errors handled later in launchPlayer
+    },
+  });
+}
+
 function launchPlayer(url, playAtMs, code) {
   const videoId = extractVideoId(url);
 
-  // Hide main card + how section
-  document.getElementById('main-card').style.display  = 'none';
+  document.getElementById('main-card').style.display   = 'none';
   document.getElementById('how-section').style.display = 'none';
-  document.querySelector('.logo').style.marginBottom  = '24px';
+  document.querySelector('.logo').style.marginBottom   = '24px';
 
   const playerScreen = document.getElementById('player-screen');
   playerScreen.classList.add('active');
 
   const overlay    = document.getElementById('player-overlay');
   const overlayNum = document.getElementById('overlay-count');
-  const iframe     = document.getElementById('yt-iframe');
-  const fallback   = document.getElementById('fallback-banner');
-  const fallLink   = document.getElementById('fallback-link');
 
-  // Build YouTube embed URL with autoplay suppressed (we'll trigger via API when time comes)
-  // enablejsapi=1 lets us control it; autoplay=0 initially
-  const embedUrl = `https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=0&rel=0&modestbranding=1`;
-  iframe.src = embedUrl;
+  pendingPlayAt = playAtMs;
 
-  // Handle embed errors (some videos block embedding)
-  iframe.onerror = () => showFallback(url, playAtMs);
+  // On iOS, if we already primed the player during the user gesture, reuse it.
+  // Otherwise (Android / desktop), create a fresh player as before.
+  if (isIOS && ytPlayer && ytPlayerReady && iosMediaUnlocked) {
+    // Player already exists and media element is unlocked — just seek to start
+    ytPlayer.seekTo(1, true);
+    ytPlayer.pauseVideo();
+  } else {
+    // Destroy any previous YT player instance
+    if (ytPlayer) {
+      try { ytPlayer.destroy(); } catch (_) {}
+      ytPlayer = null;
+      ytPlayerReady = false;
+    }
 
-  // Countdown overlay on video
-  const overlayTimer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
-    if (secsLeft <= 0) {
-      clearInterval(overlayTimer);
-      overlay.classList.add('hidden');
+    // Replace iframe element fresh (YT API needs a plain div or empty iframe)
+    const container = document.getElementById('video-container');
+    const oldIframe = document.getElementById('yt-iframe');
+    if (oldIframe) oldIframe.remove();
+    const playerDiv = document.createElement('div');
+    playerDiv.id = 'yt-iframe';
+    // Insert before the overlay so overlay stays on top
+    container.insertBefore(playerDiv, overlay);
+
+    // Create YT Player immediately so it starts buffering during the countdown
+    ytPlayer = new YT.Player('yt-iframe', {
+      videoId,
+      playerVars: {
+        autoplay: 0,
+        playsinline: 1,
+        start: 1,       // preload from second 1 — our sync start point
+        rel: 0,
+        modestbranding: 1,
+        enablejsapi: 1,
+      },
+      events: {
+        onReady: (event) => {
+          ytPlayerReady = true;
+          // Seek to second 1 and pause — forces buffering while countdown runs
+          event.target.seekTo(1, true);
+          event.target.pauseVideo();
+        },
+        onError: () => showFallback(url, playAtMs),
+      },
+    });
+  }
+
+  // Countdown overlay — runs independently; fires play exactly at sync time
+  clearInterval(overlayTimerRef);
+  overlayTimerRef = setInterval(() => {
+    const msLeft   = pendingPlayAt - Date.now();
+    const secsLeft = Math.ceil(msLeft / 1000);
+
+    if (msLeft <= 0) {
+      clearInterval(overlayTimerRef);
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
-      triggerPlay(iframe, url, playAtMs);
+
+      const tryPlay = () => {
+        ytPlayer.seekTo(1, true);
+        ytPlayer.playVideo();
+      };
+
+      if (ytPlayerReady) {
+        tryPlay();
+      } else {
+        const waitAndPlay = setInterval(() => {
+          if (ytPlayerReady) {
+            clearInterval(waitAndPlay);
+            tryPlay();
+          }
+        }, 50);
+      }
+
+      // On iOS, check after a short delay if the video actually started.
+      // If not, show a "Tap to Play" overlay so the user can trigger it manually.
+      if (isIOS) {
+        setTimeout(() => {
+          if (ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
+            const state = ytPlayer.getPlayerState();
+            // YT.PlayerState.PLAYING === 1
+            if (state !== 1) {
+              showTapToPlay(overlay, overlayNum, code);
+            } else {
+              overlay.classList.add('hidden');
+            }
+          } else {
+            showTapToPlay(overlay, overlayNum, code);
+          }
+        }, 600);
+      } else {
+        overlay.classList.add('hidden');
+      }
       return;
     }
+
     overlayNum.textContent = secsLeft;
     if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
   }, 100);
 }
 
-// Trigger play via postMessage to YouTube iframe API
-function triggerPlay(iframe, url, playAtMs) {
-  // Calculate exact delay remaining (should be ~0 or slightly negative — play immediately)
-  const delay = Math.max(0, playAtMs - Date.now());
+// Fallback for iOS: show a tap-to-play overlay if programmatic play failed
+function showTapToPlay(overlay, overlayNum, code) {
+  overlay.classList.remove('hidden');
+  overlay.classList.add('tap-to-play');
+  overlayNum.textContent = '▶';
+  overlayNum.style.color = '';
+  overlay.querySelector('.big-label').textContent = 'tap to play';
 
-  setTimeout(() => {
-    try {
-      iframe.contentWindow.postMessage(
-        JSON.stringify({ event: 'command', func: 'playVideo', args: [] }),
-        '*'
-      );
-    } catch (_) {}
-
-    // Detect embed block: if video doesn't load in 3s, show fallback
-    setTimeout(() => {
-      try {
-        const doc = iframe.contentDocument || iframe.contentWindow.document;
-        if (!doc || doc.body.innerHTML === '') showFallback(url, playAtMs);
-      } catch (_) {
-        // cross-origin means it loaded — that's fine
-      }
-    }, 3000);
-  }, delay);
+  const handler = () => {
+    overlay.removeEventListener('click', handler);
+    overlay.classList.remove('tap-to-play');
+    overlay.classList.add('hidden');
+    if (ytPlayer && ytPlayerReady) {
+      ytPlayer.seekTo(1, true);
+      ytPlayer.playVideo();
+    }
+    document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
+  };
+  overlay.addEventListener('click', handler);
 }
 
 function showFallback(url, playAtMs) {
@@ -868,14 +1015,34 @@ function resetApp() {
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
 
-  // Reset iframe
-  document.getElementById('yt-iframe').src = '';
+  // Destroy YT player and restore iframe placeholder
+  clearInterval(overlayTimerRef);
+  if (ytPlayer) {
+    try { ytPlayer.destroy(); } catch (_) {}
+    ytPlayer = null;
+    ytPlayerReady = false;
+    pendingPlayAt = null;
+    iosMediaUnlocked = false;
+  }
+  // Restore a fresh iframe element for next use
+  const container = document.getElementById('video-container');
+  const oldDiv = document.getElementById('yt-iframe');
+  if (oldDiv) oldDiv.remove();
+  const freshIframe = document.createElement('iframe');
+  freshIframe.id = 'yt-iframe';
+  freshIframe.setAttribute('allowfullscreen', '');
+  freshIframe.setAttribute('allow', 'autoplay; encrypted-media');
+  const overlay = document.getElementById('player-overlay');
+  container.insertBefore(freshIframe, overlay);
 
-  // Reset player screen
   document.getElementById('player-screen').classList.remove('active');
   document.getElementById('player-overlay').classList.remove('hidden');
+  document.getElementById('player-overlay').classList.remove('tap-to-play');
   document.getElementById('overlay-count').textContent = '—';
   document.getElementById('overlay-count').style.color = '';
+  // Restore overlay label in case it was changed to "tap to play"
+  const overlayLabel = document.querySelector('#player-overlay .big-label');
+  if (overlayLabel) overlayLabel.textContent = 'starting in';
   document.getElementById('fallback-banner').classList.remove('show');
 
   // Reset create panel

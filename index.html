@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>qwerSyncPlay — Listen Together</title>
+<title>yoloSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -681,9 +681,6 @@ async function handleCreate() {
   const videoId = extractVideoId(url);
   if (!videoId) return showMsg('create-msg', 'That doesn\'t look like a valid YouTube URL.', 'error');
 
-  // Prime the YT player on iOS during this user gesture (synchronous call)
-  primePlayerForIOS(videoId);
-
   setLoading('create-btn', true);
 
   try {
@@ -717,6 +714,9 @@ function startCreateCountdown(playAtMs, url, code) {
   const num  = document.getElementById('create-countdown-num');
   wrap.classList.add('active');
 
+  // Launch the player screen immediately with the filler video + countdown overlay
+  launchPlayer(url, playAtMs, code);
+
   clearInterval(createCountdownTimer);
 
   createCountdownTimer = setInterval(() => {
@@ -725,7 +725,6 @@ function startCreateCountdown(playAtMs, url, code) {
     if (secsLeft <= 0) {
       clearInterval(createCountdownTimer);
       wrap.classList.remove('active');
-      launchPlayer(url, playAtMs, code);
       return;
     }
 
@@ -761,10 +760,6 @@ async function handleJoin() {
     const playAtMs = res.play_at_ms;
     const url      = res.url;
 
-    // Prime the YT player on iOS now that we have the URL (still within user gesture chain)
-    const joinVideoId = extractVideoId(url);
-    if (joinVideoId) primePlayerForIOS(joinVideoId);
-
     setInputState('join-code', 'join-code-status', 'valid', '✓');
     showMsg('join-msg', '✅ Code found! Syncing…', 'success');
 
@@ -784,13 +779,15 @@ function startJoinCountdown(playAtMs, url, code) {
 
   document.getElementById('join-btn').textContent = 'Synced ✓';
 
+  // Launch the player screen immediately with the filler video + countdown overlay
+  launchPlayer(url, playAtMs, code);
+
   const timer = setInterval(() => {
     const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
 
     if (secsLeft <= 0) {
       clearInterval(timer);
       wrap.classList.remove('active');
-      launchPlayer(url, playAtMs, code);
       return;
     }
 
@@ -804,7 +801,10 @@ let ytPlayer       = null;
 let ytPlayerReady  = false;
 let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
 let overlayTimerRef = null;
-let iosMediaUnlocked = false; // tracks whether we've primed the media element on iOS
+let fillerPlaying  = false;  // true once the filler video is actively playing
+
+// Filler video that plays during the countdown to unlock the media element on iOS
+const FILLER_VIDEO_ID = 'QggJzZdIYPI';
 
 // Detect iOS (includes iPhone, iPad, iPod — iPadOS 13+ reports as Mac so we check touch too)
 const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -813,51 +813,6 @@ const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
 // Called by YouTube IFrame API once script loads
 function onYouTubeIframeAPIReady() {
   // Player will be created in launchPlayer; this is just the global hook YT API needs.
-}
-
-// Prime the YT player on iOS during a real user gesture to unlock media playback.
-// Must be called synchronously inside a click/tap handler.
-function primePlayerForIOS(videoId) {
-  if (!isIOS) return;
-
-  // Destroy any leftover player
-  if (ytPlayer) {
-    try { ytPlayer.destroy(); } catch (_) {}
-    ytPlayer = null;
-    ytPlayerReady = false;
-  }
-
-  const container = document.getElementById('video-container');
-  const oldEl = document.getElementById('yt-iframe');
-  if (oldEl) oldEl.remove();
-  const playerDiv = document.createElement('div');
-  playerDiv.id = 'yt-iframe';
-  const overlay = document.getElementById('player-overlay');
-  container.insertBefore(playerDiv, overlay);
-
-  ytPlayer = new YT.Player('yt-iframe', {
-    videoId,
-    playerVars: {
-      autoplay: 0,
-      playsinline: 1,
-      rel: 0,
-      modestbranding: 1,
-      enablejsapi: 1,
-    },
-    events: {
-      onReady: (event) => {
-        ytPlayerReady = true;
-        // Quick play→pause to unlock the media element on iOS
-        event.target.playVideo();
-        setTimeout(() => {
-          event.target.pauseVideo();
-          event.target.seekTo(0, true);
-          iosMediaUnlocked = true;
-        }, 200);
-      },
-      onError: () => {}, // errors handled later in launchPlayer
-    },
-  });
 }
 
 function launchPlayer(url, playAtMs, code) {
@@ -874,54 +829,59 @@ function launchPlayer(url, playAtMs, code) {
   const overlayNum = document.getElementById('overlay-count');
 
   pendingPlayAt = playAtMs;
+  fillerPlaying = false;
 
-  // On iOS, if we already primed the player during the user gesture, reuse it.
-  // Otherwise (Android / desktop), create a fresh player as before.
-  if (isIOS && ytPlayer && ytPlayerReady && iosMediaUnlocked) {
-    // Player already exists and media element is unlocked — just seek to start
-    ytPlayer.seekTo(1, true);
-    ytPlayer.pauseVideo();
-  } else {
-    // Destroy any previous YT player instance
-    if (ytPlayer) {
-      try { ytPlayer.destroy(); } catch (_) {}
-      ytPlayer = null;
-      ytPlayerReady = false;
-    }
-
-    // Replace iframe element fresh (YT API needs a plain div or empty iframe)
-    const container = document.getElementById('video-container');
-    const oldIframe = document.getElementById('yt-iframe');
-    if (oldIframe) oldIframe.remove();
-    const playerDiv = document.createElement('div');
-    playerDiv.id = 'yt-iframe';
-    // Insert before the overlay so overlay stays on top
-    container.insertBefore(playerDiv, overlay);
-
-    // Create YT Player immediately so it starts buffering during the countdown
-    ytPlayer = new YT.Player('yt-iframe', {
-      videoId,
-      playerVars: {
-        autoplay: 0,
-        playsinline: 1,
-        start: 1,       // preload from second 1 — our sync start point
-        rel: 0,
-        modestbranding: 1,
-        enablejsapi: 1,
-      },
-      events: {
-        onReady: (event) => {
-          ytPlayerReady = true;
-          // Seek to second 1 and pause — forces buffering while countdown runs
-          event.target.seekTo(1, true);
-          event.target.pauseVideo();
-        },
-        onError: () => showFallback(url, playAtMs),
-      },
-    });
+  // Destroy any previous YT player instance
+  if (ytPlayer) {
+    try { ytPlayer.destroy(); } catch (_) {}
+    ytPlayer = null;
+    ytPlayerReady = false;
   }
 
-  // Countdown overlay — runs independently; fires play exactly at sync time
+  // Replace iframe element fresh
+  const container = document.getElementById('video-container');
+  const oldIframe = document.getElementById('yt-iframe');
+  if (oldIframe) oldIframe.remove();
+  const playerDiv = document.createElement('div');
+  playerDiv.id = 'yt-iframe';
+  container.insertBefore(playerDiv, overlay);
+
+  // Create YT Player with the FILLER video so it plays during the countdown.
+  // On non-iOS, autoplay the filler immediately. On iOS, we'll show "Tap to Play".
+  ytPlayer = new YT.Player('yt-iframe', {
+    videoId: FILLER_VIDEO_ID,
+    playerVars: {
+      autoplay: isIOS ? 0 : 1,
+      playsinline: 1,
+      rel: 0,
+      modestbranding: 1,
+      enablejsapi: 1,
+    },
+    events: {
+      onReady: (event) => {
+        ytPlayerReady = true;
+        if (!isIOS) {
+          // On Android/desktop, start filler immediately
+          event.target.playVideo();
+          fillerPlaying = true;
+        }
+      },
+      onStateChange: (event) => {
+        // Track when filler actually starts playing (important for iOS tap-to-play)
+        if (event.data === YT.PlayerState.PLAYING) {
+          fillerPlaying = true;
+        }
+      },
+      onError: () => showFallback(url, playAtMs),
+    },
+  });
+
+  // On iOS, show "Tap to Play" overlay immediately so user can start the filler
+  if (isIOS) {
+    showTapToPlayFiller(overlay, overlayNum);
+  }
+
+  // Countdown overlay — runs independently; swaps to real video at sync time
   clearInterval(overlayTimerRef);
   overlayTimerRef = setInterval(() => {
     const msLeft   = pendingPlayAt - Date.now();
@@ -929,68 +889,52 @@ function launchPlayer(url, playAtMs, code) {
 
     if (msLeft <= 0) {
       clearInterval(overlayTimerRef);
+      overlay.classList.add('hidden');
+      overlay.classList.remove('tap-to-play');
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
 
-      const tryPlay = () => {
-        ytPlayer.seekTo(1, true);
-        ytPlayer.playVideo();
+      // Swap from filler to the real video using loadVideoById.
+      // Since the player is already playing (filler), iOS should allow this.
+      const doSwap = () => {
+        ytPlayer.loadVideoById({ videoId: videoId, startSeconds: 0 });
       };
 
-      if (ytPlayerReady) {
-        tryPlay();
+      if (ytPlayerReady && fillerPlaying) {
+        doSwap();
       } else {
-        const waitAndPlay = setInterval(() => {
-          if (ytPlayerReady) {
-            clearInterval(waitAndPlay);
-            tryPlay();
+        // Wait for player + filler to be ready, then swap
+        const waitAndSwap = setInterval(() => {
+          if (ytPlayerReady && fillerPlaying) {
+            clearInterval(waitAndSwap);
+            doSwap();
           }
         }, 50);
-      }
-
-      // On iOS, check after a short delay if the video actually started.
-      // If not, show a "Tap to Play" overlay so the user can trigger it manually.
-      if (isIOS) {
-        setTimeout(() => {
-          if (ytPlayer && typeof ytPlayer.getPlayerState === 'function') {
-            const state = ytPlayer.getPlayerState();
-            // YT.PlayerState.PLAYING === 1
-            if (state !== 1) {
-              showTapToPlay(overlay, overlayNum, code);
-            } else {
-              overlay.classList.add('hidden');
-            }
-          } else {
-            showTapToPlay(overlay, overlayNum, code);
-          }
-        }, 600);
-      } else {
-        overlay.classList.add('hidden');
       }
       return;
     }
 
+    // Update countdown number (keep it visible even with tap-to-play)
     overlayNum.textContent = secsLeft;
     if (secsLeft <= 3) overlayNum.style.color = 'var(--green)';
   }, 100);
 }
 
-// Fallback for iOS: show a tap-to-play overlay if programmatic play failed
-function showTapToPlay(overlay, overlayNum, code) {
+// Show "Tap to Play" on the overlay for iOS — starts the filler video on tap
+function showTapToPlayFiller(overlay, overlayNum) {
   overlay.classList.remove('hidden');
   overlay.classList.add('tap-to-play');
-  overlayNum.textContent = '▶';
-  overlayNum.style.color = '';
-  overlay.querySelector('.big-label').textContent = 'tap to play';
+  // Show the tap prompt above the countdown
+  const label = overlay.querySelector('.big-label');
+  label.textContent = 'tap to start';
 
   const handler = () => {
     overlay.removeEventListener('click', handler);
     overlay.classList.remove('tap-to-play');
-    overlay.classList.add('hidden');
+    label.textContent = 'starting in';
+    // Start the filler video — this is a real user gesture so iOS allows it
     if (ytPlayer && ytPlayerReady) {
-      ytPlayer.seekTo(1, true);
       ytPlayer.playVideo();
     }
-    document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
   };
   overlay.addEventListener('click', handler);
 }
@@ -1022,7 +966,7 @@ function resetApp() {
     ytPlayer = null;
     ytPlayerReady = false;
     pendingPlayAt = null;
-    iosMediaUnlocked = false;
+    fillerPlaying = false;
   }
   // Restore a fresh iframe element for next use
   const container = document.getElementById('video-container');

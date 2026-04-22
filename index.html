@@ -484,7 +484,7 @@
       <div class="logo-icon">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm-2 13V8l6 4-6 4z"/></svg>
       </div>
-      <h1>Sync<span>PPlay</span></h1>
+      <h1>Sync<span>Play</span></h1>
     </div>
     <p>Listen together...., in sync</p>
   </div>
@@ -779,9 +779,6 @@ function startCreateCountdown(playAtMs, url, code) {
   // Launch the player screen immediately with the filler video + countdown overlay
   launchPlayer(url, playAtMs, code);
 
-  // Start periodic clock re-sync during countdown
-  startClockResync();
-
   clearInterval(createCountdownTimer);
 
   createCountdownTimer = setInterval(() => {
@@ -790,7 +787,6 @@ function startCreateCountdown(playAtMs, url, code) {
     if (secsLeft <= 0) {
       clearInterval(createCountdownTimer);
       wrap.classList.remove('active');
-      stopClockResync();
       return;
     }
 
@@ -848,16 +844,12 @@ function startJoinCountdown(playAtMs, url, code) {
   // Launch the player screen immediately with the filler video + countdown overlay
   launchPlayer(url, playAtMs, code);
 
-  // Start periodic clock re-sync during countdown
-  startClockResync();
-
   const timer = setInterval(() => {
     const secsLeft = Math.ceil((playAtMs - correctedNow()) / 1000);
 
     if (secsLeft <= 0) {
       clearInterval(timer);
       wrap.classList.remove('active');
-      stopClockResync();
       return;
     }
 
@@ -1098,7 +1090,6 @@ function resetApp() {
   clearInterval(createCountdownTimer);
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
-  stopClockResync();
   stopDriftCorrection();
 
   // Destroy YT player and restore iframe placeholder

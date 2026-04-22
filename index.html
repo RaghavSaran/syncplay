@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>SyncPlay — Listen Together</title>
+<title>SSSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -627,10 +627,10 @@ async function syncClock() {
   console.warn('[SyncPlay] All clock APIs failed, using device time (offset=0)');
 }
 
-// Start periodic re-sync (every 1 second) during countdowns
+// Start periodic re-sync (every 3 seconds) during countdowns
 function startClockResync() {
   stopClockResync();
-  clockSyncInterval = setInterval(() => syncClock(), 1000);
+  clockSyncInterval = setInterval(() => syncClock(), 3000);
 }
 
 function stopClockResync() {
@@ -953,11 +953,29 @@ function launchPlayer(url, playAtMs, code) {
     showTapToPlayFiller(overlay, overlayNum);
   }
 
-  // Countdown overlay — runs independently; swaps to real video at sync time
+  // Countdown overlay — runs independently; pre-buffers real video, then plays at sync time
   clearInterval(overlayTimerRef);
+  let preBuffered = false; // true once we've loaded the real video and paused it
+
   overlayTimerRef = setInterval(() => {
     const msLeft   = pendingPlayAt - correctedNow();
     const secsLeft = Math.ceil(msLeft / 1000);
+
+    // ~5 seconds before t=0: swap from filler to real video, let it play briefly, then pause at 0.
+    // This pre-buffers the real video so it's ready to unpause instantly at t=0.
+    if (!preBuffered && msLeft <= 5000 && msLeft > 0 && ytPlayerReady && fillerPlaying) {
+      preBuffered = true;
+      console.log('[SyncPlay] Pre-buffering real video...');
+      ytPlayer.loadVideoById({ videoId: videoId, startSeconds: 0 });
+      // Wait a moment for it to start loading, then pause at 0
+      setTimeout(() => {
+        if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+          ytPlayer.pauseVideo();
+          ytPlayer.seekTo(0, true);
+          console.log('[SyncPlay] Real video pre-buffered and paused at 0');
+        }
+      }, 800);
+    }
 
     if (msLeft <= 0) {
       clearInterval(overlayTimerRef);
@@ -965,27 +983,26 @@ function launchPlayer(url, playAtMs, code) {
       overlay.classList.remove('tap-to-play');
       document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${code}`;
 
-      // Swap from filler to the real video using loadVideoById.
-      // Since the player is already playing (filler), iOS should allow this.
-      // Calculate how many seconds late we are — the video should start at this offset.
-      const doSwap = () => {
+      // Video is already loaded and paused at 0 — just unpause
+      const doPlay = () => {
         const lateMs = correctedNow() - pendingPlayAt;
         const startSec = Math.max(0, lateMs / 1000);
-        console.log(`[SyncPlay] Swapping to real video, late by ${Math.round(lateMs)}ms, starting at ${startSec.toFixed(2)}s`);
-        ytPlayer.loadVideoById({ videoId: videoId, startSeconds: startSec });
+        console.log(`[SyncPlay] Playing real video, late by ${Math.round(lateMs)}ms, seeking to ${startSec.toFixed(2)}s`);
+        if (startSec > 0.5) {
+          ytPlayer.seekTo(startSec, true);
+        }
+        ytPlayer.playVideo();
         realVideoStarted = true;
-        // Start drift correction — runs every 2s for the first 10s of playback
         startDriftCorrection();
       };
 
-      if (ytPlayerReady && fillerPlaying) {
-        doSwap();
+      if (ytPlayerReady) {
+        doPlay();
       } else {
-        // Wait for player + filler to be ready, then swap
-        const waitAndSwap = setInterval(() => {
-          if (ytPlayerReady && fillerPlaying) {
-            clearInterval(waitAndSwap);
-            doSwap();
+        const waitAndPlay = setInterval(() => {
+          if (ytPlayerReady) {
+            clearInterval(waitAndPlay);
+            doPlay();
           }
         }, 50);
       }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>yoloSyncPlay — Listen Together</title>
+<title>xxxSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -581,6 +581,68 @@ let createCountdownTimer = null;
 let playbackTimer        = null;
 let codeCheckTimeout     = null;
 
+// ── CLOCK SYNC ───────────────────────────────────────────────
+// Offset in ms: corrected time = Date.now() + clockOffset
+let clockOffset = 0;
+let clockSyncInterval = null;
+
+// Returns the best estimate of "true" current time in ms
+function correctedNow() {
+  return Date.now() + clockOffset;
+}
+
+// Fetch true time from a time API, accounting for network round-trip
+async function fetchTrueTime(apiUrl) {
+  const t0  = Date.now();
+  const res = await fetch(apiUrl);
+  const rtt = Date.now() - t0;
+  const data = await res.json();
+  // Both APIs return unixtime in seconds
+  const serverMs = data.unixtime * 1000;
+  // The server timestamp represents the time at the server when it responded.
+  // The best estimate of "now" on the server is serverMs + rtt/2
+  // (request took ~rtt/2 to reach server, response took ~rtt/2 to come back)
+  // So: trueNow ≈ serverMs + rtt/2
+  // offset = trueNow - Date.now() = serverMs + rtt/2 - Date.now()
+  const localNow = Date.now();
+  return (serverMs + Math.round(rtt / 2)) - localNow;
+}
+
+// Try primary API, fall back to secondary, fall back to 0
+async function syncClock() {
+  const apis = [
+    'https://time.now/developer/api/ip',
+    'https://worldtimeapi.org/api/timezone/Etc/UTC'
+  ];
+  for (const api of apis) {
+    try {
+      const offset = await fetchTrueTime(api);
+      clockOffset = offset;
+      console.log(`[SyncPlay] Clock synced via ${api} — offset: ${offset}ms`);
+      return;
+    } catch (e) {
+      console.warn(`[SyncPlay] Clock sync failed for ${api}:`, e.message);
+    }
+  }
+  console.warn('[SyncPlay] All clock APIs failed, using device time (offset=0)');
+}
+
+// Start periodic re-sync (every 3 seconds) during countdowns
+function startClockResync() {
+  stopClockResync();
+  clockSyncInterval = setInterval(() => syncClock(), 3000);
+}
+
+function stopClockResync() {
+  if (clockSyncInterval) {
+    clearInterval(clockSyncInterval);
+    clockSyncInterval = null;
+  }
+}
+
+// Initial sync on page load
+syncClock();
+
 // ── TAB SWITCH ────────────────────────────────────────────────
 function switchTab(tab) {
   currentTab = tab;
@@ -717,14 +779,18 @@ function startCreateCountdown(playAtMs, url, code) {
   // Launch the player screen immediately with the filler video + countdown overlay
   launchPlayer(url, playAtMs, code);
 
+  // Start periodic clock re-sync during countdown
+  startClockResync();
+
   clearInterval(createCountdownTimer);
 
   createCountdownTimer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
+    const secsLeft = Math.ceil((playAtMs - correctedNow()) / 1000);
 
     if (secsLeft <= 0) {
       clearInterval(createCountdownTimer);
       wrap.classList.remove('active');
+      stopClockResync();
       return;
     }
 
@@ -782,12 +848,16 @@ function startJoinCountdown(playAtMs, url, code) {
   // Launch the player screen immediately with the filler video + countdown overlay
   launchPlayer(url, playAtMs, code);
 
+  // Start periodic clock re-sync during countdown
+  startClockResync();
+
   const timer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
+    const secsLeft = Math.ceil((playAtMs - correctedNow()) / 1000);
 
     if (secsLeft <= 0) {
       clearInterval(timer);
       wrap.classList.remove('active');
+      stopClockResync();
       return;
     }
 
@@ -884,7 +954,7 @@ function launchPlayer(url, playAtMs, code) {
   // Countdown overlay — runs independently; swaps to real video at sync time
   clearInterval(overlayTimerRef);
   overlayTimerRef = setInterval(() => {
-    const msLeft   = pendingPlayAt - Date.now();
+    const msLeft   = pendingPlayAt - correctedNow();
     const secsLeft = Math.ceil(msLeft / 1000);
 
     if (msLeft <= 0) {
@@ -958,6 +1028,7 @@ function resetApp() {
   clearInterval(createCountdownTimer);
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
+  stopClockResync();
 
   // Destroy YT player and restore iframe placeholder
   clearInterval(overlayTimerRef);

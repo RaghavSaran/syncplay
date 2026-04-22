@@ -484,7 +484,7 @@
       <div class="logo-icon">
         <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 100 18A9 9 0 0012 3zm-2 13V8l6 4-6 4z"/></svg>
       </div>
-      <h1>SSync<span>Play</span></h1>
+      <h1>Sync<span>PPlay</span></h1>
     </div>
     <p>Listen together...., in sync</p>
   </div>
@@ -1019,46 +1019,57 @@ function showTapToPlayFiller(overlay, overlayNum) {
 }
 
 // ── DRIFT CORRECTION ──────────────────────────────────────────
-// After the real video starts, check every 2s for the first 10s
-// that the video's playback position matches where it should be.
-// Expected position = (correctedNow() - pendingPlayAt) / 1000
+// After the real video starts, wait for it to reach 2s of playback,
+// then correct once. Then correct once more 3s later. Uses correctedNow()
+// (which already has the clock offset from initial sync) — no extra API calls.
 function startDriftCorrection() {
   stopDriftCorrection();
-  let checksRemaining = 5; // 5 checks × 2s = 10 seconds of correction
 
+  // Poll every 500ms waiting for the video to reach 2 seconds of actual playback
+  let correctionsDone = 0;
   driftCorrectionRef = setInterval(() => {
-    checksRemaining--;
+    if (!ytPlayer || !realVideoStarted || typeof ytPlayer.getCurrentTime !== 'function') return;
 
-    if (!ytPlayer || !realVideoStarted || typeof ytPlayer.getCurrentTime !== 'function') {
-      if (checksRemaining <= 0) stopDriftCorrection();
-      return;
-    }
-
-    // Only correct if the video is actually playing
     const state = ytPlayer.getPlayerState();
-    if (state !== YT.PlayerState.PLAYING) {
-      if (checksRemaining <= 0) stopDriftCorrection();
-      return;
+    if (state !== YT.PlayerState.PLAYING) return;
+
+    const actualPos = ytPlayer.getCurrentTime();
+
+    // First correction: when video reaches 2 seconds of playback
+    if (correctionsDone === 0 && actualPos >= 2) {
+      applyDriftCorrection();
+      correctionsDone = 1;
+      // Schedule the second (and final) correction 3 seconds from now
+      setTimeout(() => {
+        applyDriftCorrection();
+        correctionsDone = 2;
+        stopDriftCorrection();
+        console.log('[SyncPlay] Drift correction complete (2 of 2)');
+      }, 3000);
+      // Stop the polling interval — the second correction is on a timeout
+      clearInterval(driftCorrectionRef);
+      driftCorrectionRef = null;
     }
+  }, 500);
+}
 
-    const actualPos   = ytPlayer.getCurrentTime();           // where video IS (seconds)
-    const expectedPos = (correctedNow() - pendingPlayAt) / 1000; // where video SHOULD be
-    const drift       = expectedPos - actualPos;             // positive = video is behind
+function applyDriftCorrection() {
+  if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+  const state = ytPlayer.getPlayerState();
+  if (state !== YT.PlayerState.PLAYING) return;
 
-    console.log(`[SyncPlay] Drift check: actual=${actualPos.toFixed(2)}s, expected=${expectedPos.toFixed(2)}s, drift=${drift.toFixed(2)}s`);
+  const actualPos   = ytPlayer.getCurrentTime();
+  const expectedPos = (correctedNow() - pendingPlayAt) / 1000;
+  const drift       = expectedPos - actualPos;
 
-    // Only seek if drift is more than 0.5s (avoid micro-corrections that cause stutter)
-    if (Math.abs(drift) > 0.5) {
-      const seekTo = actualPos + drift;
-      console.log(`[SyncPlay] Correcting drift: seeking to ${seekTo.toFixed(2)}s`);
-      ytPlayer.seekTo(seekTo, true);
-    }
+  console.log(`[SyncPlay] Drift check: actual=${actualPos.toFixed(2)}s, expected=${expectedPos.toFixed(2)}s, drift=${drift.toFixed(2)}s`);
 
-    if (checksRemaining <= 0) {
-      stopDriftCorrection();
-      console.log('[SyncPlay] Drift correction complete');
-    }
-  }, 2000);
+  // Only seek if drift is more than 0.3s
+  if (Math.abs(drift) > 0.3) {
+    const seekTo = actualPos + drift;
+    console.log(`[SyncPlay] Correcting: seeking to ${seekTo.toFixed(2)}s`);
+    ytPlayer.seekTo(seekTo, true);
+  }
 }
 
 function stopDriftCorrection() {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>xxxSyncPlay — Listen Together</title>
+<title>abcSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -872,6 +872,8 @@ let ytPlayerReady  = false;
 let pendingPlayAt  = null;   // ms timestamp to play at, set before player is ready
 let overlayTimerRef = null;
 let fillerPlaying  = false;  // true once the filler video is actively playing
+let realVideoSwapped = false; // true once we've called loadVideoById for the real video
+let playbackCorrected = false; // true once we've done the one-time seek correction
 
 // Filler video that plays during the countdown to unlock the media element on iOS
 const FILLER_VIDEO_ID = 'QggJzZdIYPI';
@@ -900,6 +902,8 @@ function launchPlayer(url, playAtMs, code) {
 
   pendingPlayAt = playAtMs;
   fillerPlaying = false;
+  realVideoSwapped = false;
+  playbackCorrected = false;
 
   // Destroy any previous YT player instance
   if (ytPlayer) {
@@ -939,7 +943,13 @@ function launchPlayer(url, playAtMs, code) {
       onStateChange: (event) => {
         // Track when filler actually starts playing (important for iOS tap-to-play)
         if (event.data === YT.PlayerState.PLAYING) {
-          fillerPlaying = true;
+          if (!realVideoSwapped) {
+            fillerPlaying = true;
+          } else if (!playbackCorrected) {
+            // Real video just started playing — correct the playback position
+            playbackCorrected = true;
+            correctPlaybackPosition();
+          }
         }
       },
       onError: () => showFallback(url, playAtMs),
@@ -966,6 +976,7 @@ function launchPlayer(url, playAtMs, code) {
       // Swap from filler to the real video using loadVideoById.
       // Since the player is already playing (filler), iOS should allow this.
       const doSwap = () => {
+        realVideoSwapped = true;
         ytPlayer.loadVideoById({ videoId: videoId, startSeconds: 0 });
       };
 
@@ -1009,6 +1020,31 @@ function showTapToPlayFiller(overlay, overlayNum) {
   overlay.addEventListener('click', handler);
 }
 
+// One-time playback correction: when the real video starts playing,
+// check how many seconds late it is vs the intended play_at_ms,
+// then seek forward to compensate. Uses one final clock sync for accuracy.
+async function correctPlaybackPosition() {
+  if (!ytPlayer || !pendingPlayAt) return;
+
+  // Do one fresh clock sync for maximum accuracy at this critical moment
+  await syncClock();
+
+  const now = correctedNow();
+  const lateByMs = now - pendingPlayAt; // how many ms after play_at_ms we are
+  const lateBySec = lateByMs / 1000;
+
+  if (lateBySec > 0.5) {
+    // Only correct if we're more than 500ms late (avoid unnecessary micro-seeks)
+    console.log(`[SyncPlay] Video started ${lateBySec.toFixed(1)}s late — seeking forward to compensate`);
+    ytPlayer.seekTo(lateBySec, true);
+  } else {
+    console.log(`[SyncPlay] Video started within 500ms of target — no correction needed`);
+  }
+
+  // Stop the clock resync — we're done syncing
+  stopClockResync();
+}
+
 function showFallback(url, playAtMs) {
   const fallback = document.getElementById('fallback-banner');
   const fallLink = document.getElementById('fallback-link');
@@ -1038,6 +1074,8 @@ function resetApp() {
     ytPlayerReady = false;
     pendingPlayAt = null;
     fillerPlaying = false;
+    realVideoSwapped = false;
+    playbackCorrected = false;
   }
   // Restore a fresh iframe element for next use
   const container = document.getElementById('video-container');

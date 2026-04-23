@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>SyncPlay — Listen Together</title>
+<title>xxSyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -121,7 +121,7 @@
       <div class="field">
         <label>Enter Code from Friend</label>
         <div class="input-wrap">
-          <input type="text" id="join-code" placeholder="e.g. Cutie123" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false"/>
+          <input type="text" id="join-code" placeholder="e.g. Cutie123" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" onkeydown="if(event.key==='Enter')handleJoin()"/>
           <span class="input-status" id="join-code-status"></span>
         </div>
       </div>

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>xxyySyncPlay — Listen Together</title>
+<title>SyncPlay — Listen Together</title>
 <link rel="manifest" href="manifest.json"/>
 <meta name="theme-color" content="#ff3c5f"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -58,11 +58,6 @@
   .status-msg.error{background:#ff3c5f18;color:#ff7090;border:1px solid #ff3c5f33;display:block}
   .status-msg.success{background:#00e87a18;color:#00e87a;border:1px solid #00e87a33;display:block}
   .status-msg.info{background:#5c3cff18;color:#9d8aff;border:1px solid #5c3cff33;display:block}
-  .countdown-wrap{text-align:center;padding:20px 0 8px;display:none}
-  .countdown-wrap.active{display:block}
-  .countdown-num{font-family:'Syne',sans-serif;font-weight:800;font-size:72px;line-height:1;color:var(--accent);text-shadow:var(--glow);animation:countPop 1s ease infinite}
-  .countdown-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-top:6px}
-  @keyframes countPop{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
 
   /* ── iOS PRIME (tap before countdown) ───────────────────────── */
   .ios-prime-wrap{display:none;text-align:center;padding:16px 0 8px;animation:fadeUp .3s ease both}
@@ -117,10 +112,6 @@
         <p class="ios-prime-label">iOS requires a tap to enable playback</p>
         <button class="btn btn-primary ios-prime-btn" id="create-ios-prime-btn">▶ Tap to Play</button>
       </div>
-      <div class="countdown-wrap" id="create-countdown">
-        <div class="countdown-num" id="create-countdown-num">20</div>
-        <div class="countdown-label">seconds for friend to join</div>
-      </div>
       <button class="btn btn-primary" id="create-btn" onclick="handleCreate()">Generate Sync Code</button>
     </div>
     <div class="panel" id="panel-join">
@@ -137,10 +128,6 @@
         <p class="ios-prime-label">iOS requires a tap to enable playback</p>
         <button class="btn btn-primary ios-prime-btn" id="join-ios-prime-btn">▶ Tap to Play</button>
       </div>
-      <div class="countdown-wrap" id="join-countdown">
-        <div class="countdown-num" id="join-countdown-num">20</div>
-        <div class="countdown-label">seconds until playback</div>
-      </div>
       <button class="btn btn-primary" id="join-btn" onclick="handleJoin()">Join &amp; Sync</button>
     </div>
   </div>
@@ -151,6 +138,7 @@
       <div class="live-pill"><div class="live-dot"></div> Synced</div>
       <h2>Playing Together 🎵</h2>
       <p id="player-subtext">Starting in sync…</p>
+      <p class="inline-countdown" id="inline-countdown"></p>
     </div>
     <div class="video-container" id="video-container">
       <iframe id="yt-iframe" allowfullscreen allow="autoplay; encrypted-media"></iframe>
@@ -159,10 +147,6 @@
           <svg viewBox="0 0 24 24" width="32" height="32"><path fill="white" d="M8 5v14l11-7z"/></svg>
           <span>Tap to Play</span>
         </button>
-      </div>
-      <div class="player-overlay" id="player-overlay">
-        <div class="big-count" id="overlay-count">—</div>
-        <div class="big-label">starting in</div>
       </div>
     </div>
     <div class="fallback-banner" id="fallback-banner">
@@ -214,16 +198,15 @@
   @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
   .player-header h2{font-family:'Syne',sans-serif;font-weight:800;font-size:22px}
   .player-header p{color:var(--muted);font-size:12px;margin-top:4px}
+  .inline-countdown{font-family:'Syne',sans-serif;font-size:15px;color:var(--text);margin-top:12px;min-height:22px;transition:opacity .3s}
+  .inline-countdown .countdown-secs{font-weight:800;font-size:28px;color:var(--accent);vertical-align:middle}
+  .inline-countdown.done{opacity:0}
   .video-container{position:relative;padding-top:56.25%;background:#000;border-radius:var(--radius);overflow:hidden;border:1px solid var(--border);box-shadow:0 20px 60px #00000088}
   .video-container iframe,.video-container>div:first-child{position:absolute;inset:0;width:100%;height:100%;border:none}
   .tap-overlay{position:absolute;inset:0;background:#0a0a0fee;display:none;align-items:center;justify-content:center;z-index:12;backdrop-filter:blur(6px)}
   .tap-overlay.active{display:flex}
   .tap-btn{display:flex;flex-direction:column;align-items:center;gap:10px;background:var(--accent);border:none;color:white;padding:20px 36px;border-radius:16px;font-family:'Syne',sans-serif;font-weight:700;font-size:16px;cursor:pointer;box-shadow:0 4px 30px #ff3c5f66;transition:transform .15s}
   .tap-btn:active{transform:scale(.96)}
-  .player-overlay{position:absolute;inset:0;background:#0a0a0fdd;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:10;backdrop-filter:blur(4px);transition:opacity .5s}
-  .player-overlay.hidden{opacity:0;pointer-events:none}
-  .player-overlay .big-count{font-family:'Syne',sans-serif;font-weight:800;font-size:96px;color:white;text-shadow:0 0 60px #ff3c5faa;line-height:1;animation:countPop 1s ease infinite}
-  .player-overlay .big-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:3px;margin-top:8px}
   .fallback-banner{display:none;background:#ffb34718;border:1px solid #ffb34744;color:var(--accent2);font-size:12px;padding:12px 14px;border-radius:10px;margin-top:14px;line-height:1.6;text-align:center}
   .fallback-banner a{color:var(--accent2);font-weight:700}.fallback-banner.show{display:block}
 
@@ -504,21 +487,8 @@ async function handleCreate() {
 }
 
 function startCreateCountdown(playAtMs, url, code) {
-  const wrap = document.getElementById('create-countdown');
-  const num = document.getElementById('create-countdown-num');
-  wrap.classList.add('active');
-  clearInterval(createCountdownTimer);
-  createCountdownTimer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
-    if (secsLeft <= 0) {
-      clearInterval(createCountdownTimer);
-      wrap.classList.remove('active');
-      launchPlayer(url, playAtMs, code);
-      return;
-    }
-    num.textContent = secsLeft;
-    if (secsLeft <= 5) num.style.color = 'var(--green)';
-  }, 250);
+  // Go directly to player screen — countdown will show inline above the video
+  launchPlayer(url, playAtMs, code);
 }
 
 // ── JOIN FLOW ────────────────────────────────────────────────
@@ -569,21 +539,8 @@ async function handleJoin() {
 }
 
 function startJoinCountdown(playAtMs, url, code) {
-  const wrap = document.getElementById('join-countdown');
-  const num = document.getElementById('join-countdown-num');
-  wrap.classList.add('active');
   document.getElementById('join-btn').textContent = 'Synced ✓';
-  const timer = setInterval(() => {
-    const secsLeft = Math.ceil((playAtMs - Date.now()) / 1000);
-    if (secsLeft <= 0) {
-      clearInterval(timer);
-      wrap.classList.remove('active');
-      launchPlayer(url, playAtMs, code);
-      return;
-    }
-    num.textContent = secsLeft;
-    if (secsLeft <= 5) num.style.color = 'var(--green)';
-  }, 250);
+  launchPlayer(url, playAtMs, code);
 }
 
 // ── YOUTUBE API HOOK ─────────────────────────────────────────
@@ -694,9 +651,7 @@ function launchPlayer(url, playAtMs, code) {
   document.querySelector('.logo').style.marginBottom = '24px';
   document.getElementById('player-screen').classList.add('active');
 
-  const overlay = document.getElementById('player-overlay');
   const tapOverlay = document.getElementById('tap-overlay');
-  overlay.classList.add('hidden');
   tapOverlay.classList.remove('active');
 
   if (ytPlayer) { try { ytPlayer.destroy(); } catch(_) {} ytPlayer = null; ytPlayerReady = false; }
@@ -750,9 +705,7 @@ function loadVideo(videoId, playAtMs) {
   syncCorrectionDone = false;
   clearInterval(postPlayMonitorRef);
 
-  const overlay = document.getElementById('player-overlay');
   const tapOverlay = document.getElementById('tap-overlay');
-  overlay.classList.add('hidden');
   tapOverlay.classList.remove('active');
 
   if (ytPlayer) { try { ytPlayer.destroy(); } catch(_) {} ytPlayer = null; ytPlayerReady = false; }
@@ -799,19 +752,34 @@ document.getElementById('tap-play-btn').addEventListener('click', () => {
   primeVideo();
 });
 
-// ── SYNC COUNTDOWN ───────────────────────────────────────────
+// ── SYNC COUNTDOWN (inline text above video) ─────────────────
+let seekGuardRef = null;
+
 function startSyncCountdown() {
-  const overlay = document.getElementById('player-overlay');
-  const overlayNum = document.getElementById('overlay-count');
-  overlay.classList.remove('hidden');
+  const countdownEl = document.getElementById('inline-countdown');
+  const subtextEl = document.getElementById('player-subtext');
+  subtextEl.textContent = `Syncing · Code: ${pendingCode}`;
+  countdownEl.classList.remove('done');
+
   clearInterval(overlayTimerRef);
+  clearInterval(seekGuardRef);
+
+  // Guard: keep video at 0:00 during countdown
+  seekGuardRef = setInterval(() => {
+    if (ytPlayer && ytPlayerReady && videoPrimed) {
+      const pos = ytPlayer.getCurrentTime();
+      if (pos > 0.5) ytPlayer.seekTo(0, true);
+    }
+  }, 300);
+
   overlayTimerRef = setInterval(() => {
     const msLeft = pendingPlayAt - Date.now();
     const secsLeft = Math.ceil(msLeft / 1000);
     if (msLeft <= 0) {
       clearInterval(overlayTimerRef);
-      overlay.classList.add('hidden');
-      document.getElementById('player-subtext').textContent = `Playing in sync · Code: ${pendingCode}`;
+      clearInterval(seekGuardRef);
+      countdownEl.classList.add('done');
+      subtextEl.textContent = `Playing in sync · Code: ${pendingCode}`;
       if (ytPlayerReady && videoPrimed) { ytPlayer.seekTo(0, true); ytPlayer.playVideo(); }
       else {
         const w = setInterval(() => {
@@ -820,8 +788,8 @@ function startSyncCountdown() {
       }
       return;
     }
-    overlayNum.textContent = secsLeft;
-    overlayNum.style.color = secsLeft <= 3 ? 'var(--green)' : '';
+    const color = secsLeft <= 3 ? 'var(--green)' : 'var(--accent)';
+    countdownEl.innerHTML = `Will start playing in <span class="countdown-secs" style="color:${color}">${secsLeft}</span> seconds`;
   }, 100);
 }
 
@@ -1035,6 +1003,7 @@ function resetApp() {
   clearInterval(playbackTimer);
   clearTimeout(codeCheckTimeout);
   clearInterval(overlayTimerRef);
+  clearInterval(seekGuardRef);
   clearInterval(nextVideoCheckRef);
   clearInterval(queuePollRef);
   clearTimeout(searchTimeout);
@@ -1060,9 +1029,9 @@ function resetApp() {
   container.insertBefore(freshIframe, document.getElementById('tap-overlay'));
 
   document.getElementById('player-screen').classList.remove('active');
-  document.getElementById('player-overlay').classList.remove('hidden');
-  document.getElementById('overlay-count').textContent = '—';
-  document.getElementById('overlay-count').style.color = '';
+  document.getElementById('inline-countdown').innerHTML = '';
+  document.getElementById('inline-countdown').classList.remove('done');
+  document.getElementById('player-subtext').textContent = 'Starting in sync…';
   document.getElementById('tap-overlay').classList.remove('active');
   document.getElementById('fallback-banner').classList.remove('show');
   document.getElementById('create-ios-prime').classList.remove('active');
@@ -1078,18 +1047,12 @@ function resetApp() {
   document.getElementById('create-code').value = '';
   setInputState('create-code', 'create-code-status', '', '');
   clearMsg('create-msg');
-  document.getElementById('create-countdown').classList.remove('active');
-  document.getElementById('create-countdown-num').textContent = '20';
-  document.getElementById('create-countdown-num').style.color = '';
   document.getElementById('create-btn').disabled = false;
   document.getElementById('create-btn').textContent = 'Generate Sync Code';
 
   document.getElementById('join-code').value = '';
   setInputState('join-code', 'join-code-status', '', '');
   clearMsg('join-msg');
-  document.getElementById('join-countdown').classList.remove('active');
-  document.getElementById('join-countdown-num').textContent = '20';
-  document.getElementById('join-countdown-num').style.color = '';
   document.getElementById('join-btn').disabled = false;
   document.getElementById('join-btn').textContent = 'Join & Sync';
 

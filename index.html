@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>zxSyncPlay — Listen Together</title>
+<title>pySyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -554,46 +554,42 @@ function createPrimerPlayer(videoId) {
 function handleIOSTap() {
   if (!primerReady || !primerPlayer) return;
 
-  // This is inside a user gesture — play is allowed on iOS
+  // This is inside a user gesture — play is allowed on iOS, unlocking media for the page
   primerPlayer.playVideo();
 
-  // Wait for play to register, then pause + seek to 0
-  const check = setInterval(() => {
-    const state = primerPlayer.getPlayerState();
-    if (state === 1 || state === 3) {
-      clearInterval(check);
-      primerPlayer.pauseVideo();
-      primerPlayer.seekTo(0, true);
+  let alreadyProceeded = false;
+  function proceedToCountdown() {
+    if (alreadyProceeded) return;
+    alreadyProceeded = true;
 
-      // Safety: slide back to 0 if drifted
-      setTimeout(() => {
-        if (primerPlayer && primerPlayer.getCurrentTime() > 0.1) {
-          primerPlayer.seekTo(0, true);
-        }
-      }, 200);
+    // Destroy the primer — its only job was to unlock iOS media playback
+    if (primerPlayer) { try { primerPlayer.destroy(); } catch(_) {} primerPlayer = null; primerReady = false; }
+    const primerEl = document.getElementById('yt-primer');
+    if (primerEl) primerEl.remove();
 
-      // Hide the tap button, start the countdown
-      document.getElementById('create-ios-prime').classList.remove('active');
-      document.getElementById('join-ios-prime').classList.remove('active');
-
-      if (pendingPanel === 'create') {
-        startCreateCountdown(pendingPlayAt, pendingUrl, pendingCode);
-      } else {
-        startJoinCountdown(pendingPlayAt, pendingUrl, pendingCode);
-      }
-    }
-  }, 50);
-
-  // Timeout fallback
-  setTimeout(() => {
+    // Hide the tap button, start the countdown
     document.getElementById('create-ios-prime').classList.remove('active');
     document.getElementById('join-ios-prime').classList.remove('active');
+
     if (pendingPanel === 'create') {
       startCreateCountdown(pendingPlayAt, pendingUrl, pendingCode);
     } else {
       startJoinCountdown(pendingPlayAt, pendingUrl, pendingCode);
     }
-  }, 3000);
+  }
+
+  // Wait for play to register (confirms iOS unlock), then proceed
+  const check = setInterval(() => {
+    const state = primerPlayer.getPlayerState();
+    if (state === 1 || state === 3) {
+      clearInterval(check);
+      // Brief pause to let iOS fully register the media session
+      setTimeout(proceedToCountdown, 300);
+    }
+  }, 50);
+
+  // Timeout fallback — proceed even if play detection fails
+  setTimeout(proceedToCountdown, 3000);
 }
 
 // Wire up both iOS prime buttons
@@ -646,90 +642,43 @@ function launchPlayer(url, playAtMs, code) {
   const oldIframe = document.getElementById('yt-iframe');
   if (oldIframe) oldIframe.remove();
 
-  if (isIOS && primerPlayer) {
-    // iOS: the primer player is already primed (paused at 0:00)
-    // Move the primer iframe into the video container
-    const primerEl = document.getElementById('yt-primer');
-    if (primerEl) {
-      primerEl.id = 'yt-iframe';
-      primerEl.style.cssText = ''; // remove hidden styles
-      container.insertBefore(primerEl, tapOverlay);
-    }
-    ytPlayer = primerPlayer;
-    ytPlayerReady = true;
-    videoPrimed = true;
-    primerPlayer = null;
-    primerReady = false;
+  // On both iOS and non-iOS: create a fresh player and auto-prime it.
+  // On iOS, the earlier "Tap to Play" already unlocked media playback for this page,
+  // so playVideo() will work without a user gesture now.
+  const playerDiv = document.createElement('div');
+  playerDiv.id = 'yt-iframe';
+  container.insertBefore(playerDiv, tapOverlay);
 
-    // Attach onStateChange for sync correction + queue advance
-    // (YT API doesn't let us re-attach events, so we poll instead)
-    startPostPlayMonitor(videoId, playAtMs, url);
-
-    // Go straight to sync countdown (video is already primed)
-    startSyncCountdown();
-  } else {
-    // Non-iOS: create fresh player and auto-prime
-    const playerDiv = document.createElement('div');
-    playerDiv.id = 'yt-iframe';
-    container.insertBefore(playerDiv, tapOverlay);
-
-    ytPlayer = new YT.Player('yt-iframe', {
-      videoId,
-      playerVars: { autoplay:0, rel:0, modestbranding:1, enablejsapi:1, playsinline:1 },
-      events: {
-        onReady: () => {
-          ytPlayerReady = true;
-          primeVideo();
-        },
-        onStateChange: (event) => {
-          if (event.data === YT.PlayerState.PLAYING && !syncCorrectionDone && pendingPlayAt) {
-            syncCorrectionDone = true;
-            const elapsedSec = (Date.now() - pendingPlayAt) / 1000;
-            const currentPos = ytPlayer.getCurrentTime();
-            if (elapsedSec > 0 && Math.abs(elapsedSec - currentPos) > 0.3) {
-              ytPlayer.seekTo(elapsedSec, true);
-            }
-          }
-          if (event.data === YT.PlayerState.ENDED) advanceQueue();
-        },
-        onError: () => showFallback(url, playAtMs),
+  ytPlayer = new YT.Player('yt-iframe', {
+    videoId,
+    playerVars: { autoplay:0, rel:0, modestbranding:1, enablejsapi:1, playsinline:1 },
+    events: {
+      onReady: () => {
+        ytPlayerReady = true;
+        primeVideo();
       },
-    });
-  }
+      onStateChange: (event) => {
+        if (event.data === YT.PlayerState.PLAYING && !syncCorrectionDone && pendingPlayAt) {
+          syncCorrectionDone = true;
+          const elapsedSec = (Date.now() - pendingPlayAt) / 1000;
+          const currentPos = ytPlayer.getCurrentTime();
+          if (elapsedSec > 0 && Math.abs(elapsedSec - currentPos) > 0.3) {
+            ytPlayer.seekTo(elapsedSec, true);
+          }
+        }
+        if (event.data === YT.PlayerState.ENDED) advanceQueue();
+      },
+      onError: () => showFallback(url, playAtMs),
+    },
+  });
 
   renderQueue();
   startNextVideoCheck();
   startQueuePolling();
 }
 
-// Post-play monitor for iOS (since we can't re-attach YT events to transferred primer)
+// Post-play monitor for fallback state detection
 let postPlayMonitorRef = null;
-function startPostPlayMonitor(videoId, playAtMs, url) {
-  clearInterval(postPlayMonitorRef);
-  let wasPlaying = false;
-  postPlayMonitorRef = setInterval(() => {
-    if (!ytPlayer) { clearInterval(postPlayMonitorRef); return; }
-    try {
-      const state = ytPlayer.getPlayerState();
-      // Sync correction
-      if (state === 1 && !syncCorrectionDone && pendingPlayAt) {
-        syncCorrectionDone = true;
-        const elapsedSec = (Date.now() - pendingPlayAt) / 1000;
-        const currentPos = ytPlayer.getCurrentTime();
-        if (elapsedSec > 0 && Math.abs(elapsedSec - currentPos) > 0.3) {
-          ytPlayer.seekTo(elapsedSec, true);
-        }
-        wasPlaying = true;
-      }
-      if (state === 1) wasPlaying = true;
-      // Detect ended
-      if (state === 0 && wasPlaying) {
-        clearInterval(postPlayMonitorRef);
-        advanceQueue();
-      }
-    } catch(_) {}
-  }, 250);
-}
 
 // ── LOAD NEXT VIDEO (for queue advances) ─────────────────────
 function loadVideo(videoId, playAtMs) {
@@ -1026,7 +975,6 @@ function resetApp() {
   clearInterval(nextVideoCheckRef);
   clearInterval(queuePollRef);
   clearTimeout(searchTimeout);
-  clearInterval(postPlayMonitorRef);
 
   if (primerPlayer) { try { primerPlayer.destroy(); } catch(_) {} primerPlayer = null; primerReady = false; }
   const primerEl = document.getElementById('yt-primer');

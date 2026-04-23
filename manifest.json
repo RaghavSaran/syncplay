@@ -1,0 +1,31 @@
+{
+  "name": "SyncPlay — Listen Together",
+  "short_name": "SyncPlay",
+  "description": "Listen to YouTube videos together, perfectly in sync",
+  "start_url": "/syncplay/index.html",
+  "scope": "/syncplay/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#ff3c5f",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

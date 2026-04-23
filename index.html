@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>pySyncPlay — Listen Together</title>
+<title>SyncPlay — Listen Together</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -63,6 +63,14 @@
   .ios-prime-wrap.active{display:block}
   .ios-prime-label{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px}
   .ios-prime-btn{font-size:16px;padding:16px;box-shadow:0 4px 30px #ff3c5f66}
+
+  /* ── CREATE PANEL SEARCH RESULTS ────────────────────────────── */
+  .create-search-results{display:flex;flex-direction:column;gap:6px;max-height:200px;overflow-y:auto;margin-top:8px}
+  .create-search-results:empty{display:none}
+  .create-search-result{display:flex;align-items:center;gap:10px;background:#0a0a0f;border:1px solid var(--border);border-radius:10px;padding:8px 10px;cursor:pointer;transition:border-color .2s}
+  .create-search-result:hover{border-color:var(--accent)}
+  .create-search-result img{width:48px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0}
+  .create-search-result-title{color:var(--text);font-size:12px;line-height:1.3;flex:1;min-width:0;display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 </style>
 </head>
 <body>
@@ -84,8 +92,11 @@
     </div>
     <div class="panel active" id="panel-create">
       <div class="field">
-        <label>YouTube Link</label>
-        <input type="url" id="create-url" placeholder="https://youtube.com/watch?v=..." autocomplete="off" autocorrect="off" spellcheck="false"/>
+        <label>Search or paste YouTube Link</label>
+        <div class="input-wrap">
+          <input type="text" id="create-url" placeholder="Search a song or paste URL…" autocomplete="off" autocorrect="off" spellcheck="false" oninput="onCreateUrlInput()"/>
+        </div>
+        <div class="create-search-results" id="create-search-results"></div>
       </div>
       <div class="field">
         <label>Your Code <span style="color:var(--muted)">(share this with friend)</span></label>
@@ -365,6 +376,52 @@ async function searchYouTube(query) {
 }
 
 // ── CODE INPUT LIVE CHECK ────────────────────────────────────
+let createSearchTimeout = null;
+
+function onCreateUrlInput() {
+  const val = document.getElementById('create-url').value.trim();
+  clearTimeout(createSearchTimeout);
+  const resultsEl = document.getElementById('create-search-results');
+
+  // If it looks like a URL, clear search results
+  if (val.startsWith('http://') || val.startsWith('https://') || val.includes('youtube.com') || val.includes('youtu.be')) {
+    resultsEl.innerHTML = '';
+    return;
+  }
+
+  if (val.length < 2) { resultsEl.innerHTML = ''; return; }
+
+  createSearchTimeout = setTimeout(() => performCreateSearch(val), 400);
+}
+
+async function performCreateSearch(query) {
+  const resultsEl = document.getElementById('create-search-results');
+  resultsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Searching…</div>';
+  try {
+    const data = await searchYouTube(query);
+    resultsEl.innerHTML = '';
+    if (!data.items || data.items.length === 0) {
+      resultsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">No results</div>';
+      return;
+    }
+    data.items.forEach(item => {
+      const videoId = item.id.videoId;
+      const title = item.snippet.title;
+      const thumb = item.snippet.thumbnails.default.url;
+      const div = document.createElement('div');
+      div.className = 'create-search-result';
+      div.innerHTML = `<img src="${thumb}" alt=""/><div class="create-search-result-title">${escapeHtml(title)}</div>`;
+      div.addEventListener('click', () => {
+        document.getElementById('create-url').value = `https://www.youtube.com/watch?v=${videoId}`;
+        resultsEl.innerHTML = '';
+      });
+      resultsEl.appendChild(div);
+    });
+  } catch(e) {
+    resultsEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:8px">Search failed</div>';
+  }
+}
+
 function onCreateCodeInput() {
   const val = document.getElementById('create-code').value.trim();
   clearTimeout(codeCheckTimeout);
@@ -975,6 +1032,7 @@ function resetApp() {
   clearInterval(nextVideoCheckRef);
   clearInterval(queuePollRef);
   clearTimeout(searchTimeout);
+  clearTimeout(createSearchTimeout);
 
   if (primerPlayer) { try { primerPlayer.destroy(); } catch(_) {} primerPlayer = null; primerReady = false; }
   const primerEl = document.getElementById('yt-primer');
@@ -1010,6 +1068,7 @@ function resetApp() {
   document.getElementById('queue-count').textContent = '0 songs';
 
   document.getElementById('create-url').value = '';
+  document.getElementById('create-search-results').innerHTML = '';
   document.getElementById('create-code').value = '';
   setInputState('create-code', 'create-code-status', '', '');
   clearMsg('create-msg');

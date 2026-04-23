@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
-<title>sisaSyncPlay — Listen Together</title>
+<title>ragSyncPlay — Listen Together</title>
 <link rel="manifest" href="manifest.json"/>
 <meta name="theme-color" content="#ff3c5f"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -754,45 +754,55 @@ function loadVideo(videoId, playAtMs) {
   syncCorrectionDone = false;
   clearInterval(postPlayMonitorRef);
 
-  const tapOverlay = document.getElementById('tap-overlay');
-  tapOverlay.classList.remove('active');
+  document.getElementById('tap-overlay').classList.remove('active');
 
-  if (ytPlayer) { try { ytPlayer.destroy(); } catch(_) {} ytPlayer = null; ytPlayerReady = false; }
+  if (ytPlayer && ytPlayerReady) {
+    // Reuse the existing player — keeps iOS media activation alive
+    ytPlayer.cueVideoById(videoId, 0);
+    // cueVideoById loads but doesn't play — prime it
+    // Small delay to let cue take effect
+    setTimeout(() => {
+      primeVideo();
+    }, 500);
+  } else {
+    // Fallback: create fresh player (shouldn't normally happen)
+    if (ytPlayer) { try { ytPlayer.destroy(); } catch(_) {} ytPlayer = null; ytPlayerReady = false; }
 
-  const container = document.getElementById('video-container');
-  const oldEl = document.getElementById('yt-iframe');
-  if (oldEl) oldEl.remove();
-  const playerDiv = document.createElement('div');
-  playerDiv.id = 'yt-iframe';
-  container.insertBefore(playerDiv, tapOverlay);
+    const container = document.getElementById('video-container');
+    const tapOverlay = document.getElementById('tap-overlay');
+    const oldEl = document.getElementById('yt-iframe');
+    if (oldEl) oldEl.remove();
+    const playerDiv = document.createElement('div');
+    playerDiv.id = 'yt-iframe';
+    container.insertBefore(playerDiv, tapOverlay);
 
-  ytPlayer = new YT.Player('yt-iframe', {
-    videoId,
-    playerVars: { autoplay:0, rel:0, modestbranding:1, enablejsapi:1, playsinline:1 },
-    events: {
-      onReady: () => {
-        ytPlayerReady = true;
-        if (isIOS) {
-          // For subsequent videos on iOS, show tap overlay in the player
-          tapOverlay.classList.add('active');
-        } else {
-          primeVideo();
-        }
-      },
-      onStateChange: (event) => {
-        if (event.data === YT.PlayerState.PLAYING && !syncCorrectionDone && pendingPlayAt) {
-          syncCorrectionDone = true;
-          const elapsedSec = (Date.now() - pendingPlayAt) / 1000;
-          const currentPos = ytPlayer.getCurrentTime();
-          if (elapsedSec > 0 && Math.abs(elapsedSec - currentPos) > 0.3) {
-            ytPlayer.seekTo(elapsedSec, true);
+    ytPlayer = new YT.Player('yt-iframe', {
+      videoId,
+      playerVars: { autoplay:0, rel:0, modestbranding:1, enablejsapi:1, playsinline:1 },
+      events: {
+        onReady: () => {
+          ytPlayerReady = true;
+          if (isIOS) tapOverlay.classList.add('active');
+          else primeVideo();
+        },
+        onStateChange: (event) => {
+          if (event.data === YT.PlayerState.PLAYING && !syncCorrectionDone && pendingPlayAt) {
+            syncCorrectionDone = true;
+            const elapsedSec = (Date.now() - pendingPlayAt) / 1000;
+            const currentPos = ytPlayer.getCurrentTime();
+            if (elapsedSec > 0 && Math.abs(elapsedSec - currentPos) > 0.3) {
+              ytPlayer.seekTo(elapsedSec, true);
+            }
           }
-        }
-        if (event.data === YT.PlayerState.ENDED) advanceQueue();
+          if (event.data === YT.PlayerState.ENDED) advanceQueue();
+        },
+        onError: () => {},
       },
-      onError: () => {},
-    },
-  });
+    });
+  }
+
+  // For iOS reuse path, start the post-play monitor for state tracking
+  if (isIOS) startPostPlayMonitor();
 }
 
 // ── TAP TO PLAY (iOS) ───────────────────────────────────────
